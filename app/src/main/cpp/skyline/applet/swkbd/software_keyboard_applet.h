@@ -15,7 +15,11 @@ namespace skyline::applet::swkbd {
      * @url https://switchbrew.org/wiki/Software_Keyboard
      * @brief An implementation for the Software Keyboard (swkbd) Applet which handles translating guest applet transactions to the appropriate host behavior
      */
+<<<<<<< HEAD
     class SoftwareKeyboardApplet : public service::am::IApplet {
+=======
+    class SoftwareKeyboardApplet : public service::am::IApplet, service::am::EnableNormalQueue {
+>>>>>>> skyline/ftx1
       private:
         /**
          * @url https://switchbrew.org/wiki/Software_Keyboard#CloseResult
@@ -73,8 +77,11 @@ namespace skyline::applet::swkbd {
 
         #pragma pack(pop)
 
+<<<<<<< HEAD
         std::mutex inputDataMutex;
         std::queue<std::shared_ptr<service::am::IStorage>> normalInputData;
+=======
+>>>>>>> skyline/ftx1
         KeyboardConfigVB config{};
         bool validationPending{};
         std::u16string currentText{};
