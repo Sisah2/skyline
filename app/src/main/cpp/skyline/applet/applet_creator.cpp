@@ -5,10 +5,6 @@
 #include "controller_applet.h"
 #include "error_applet.h"
 #include "player_select_applet.h"
-<<<<<<< HEAD
-#include "applet_creator.h"
-=======
->>>>>>> skyline/ftx1
 #include "swkbd/software_keyboard_applet.h"
 
 namespace skyline::applet {
