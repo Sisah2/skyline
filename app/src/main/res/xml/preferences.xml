@@ -13,14 +13,12 @@
         <emu.skyline.preference.ThemePreference
             android:defaultValue="2"
             android:entries="@array/app_theme"
-            android:entryValues="@array/app_theme_val"
             app:key="app_theme"
             app:title="@string/theme"
             app:useSimpleSummaryProvider="true" />
-        <ListPreference
+        <emu.skyline.preference.IntegerListPreference
             android:defaultValue="1"
             android:entries="@array/layout_type"
-            android:entryValues="@array/layout_type_val"
             app:key="layout_type"
             app:title="@string/layout_type"
             app:useSimpleSummaryProvider="true" />
@@ -36,19 +34,12 @@
             android:summaryOn="@string/perf_stats_desc_on"
             app:key="perf_stats"
             app:title="@string/perf_stats" />
-        <ListPreference
+        <emu.skyline.preference.LogLevelPreference
             android:defaultValue="2"
             android:entries="@array/log_level"
-            android:entryValues="@array/log_level_val"
             app:key="log_level"
             app:title="@string/log_level"
             app:useSimpleSummaryProvider="true" />
-        <CheckBoxPreference
-            android:defaultValue="false"
-            android:summaryOff="@string/log_compact_desc_off"
-            android:summaryOn="@string/log_compact_desc_on"
-            app:key="log_compact"
-            app:title="@string/log_compact" />
     </PreferenceCategory>
     <PreferenceCategory
         android:key="category_keys"
@@ -69,7 +60,7 @@
             android:defaultValue="true"
             android:summaryOff="@string/handheld_enabled"
             android:summaryOn="@string/docked_enabled"
-            app:key="operation_mode"
+            app:key="is_docked"
             app:title="@string/use_docked" />
         <emu.skyline.preference.CustomEditTextPreference
             android:defaultValue="@string/username_default"

@@ -28,9 +28,9 @@ import emu.skyline.applet.swkbd.SoftwareKeyboardDialog
 import emu.skyline.databinding.EmuActivityBinding
 import emu.skyline.input.*
 import emu.skyline.loader.getRomFormat
+import emu.skyline.utils.PreferenceSettings
 import emu.skyline.utils.ByteBufferSerializable
-import emu.skyline.utils.Settings
-import java.io.File
+import emu.skyline.utils.NativeSettings
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.FutureTask
@@ -74,7 +74,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     var desiredRefreshRate = 60f
 
     @Inject
-    lateinit var settings : Settings
+    lateinit var preferenceSettings : PreferenceSettings
 
     @Inject
     lateinit var inputManager : InputManager
@@ -85,13 +85,13 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * @param romUri The URI of the ROM as a string, used to print out in the logs
      * @param romType The type of the ROM as an enum value
      * @param romFd The file descriptor of the ROM object
-     * @param preferenceFd The file descriptor of the Preference XML
+     * @param nativeSettings The settings to be used by libskyline
      * @param publicAppFilesPath The full path to the public app files directory
      * @param privateAppFilesPath The full path to the private app files directory
      * @param nativeLibraryPath The full path to the app native library directory
      * @param assetManager The asset manager used for accessing app assets
      */
-    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, preferenceFd : Int, language : Int, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager)
+    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager)
 
     /**
      * @param join If the function should only return after all the threads join or immediately
@@ -172,7 +172,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             if (controller.type != ControllerType.None) {
                 val type = when (controller.type) {
                     ControllerType.None -> throw IllegalArgumentException()
-                    ControllerType.HandheldProController -> if (settings.operationMode) ControllerType.ProController.id else ControllerType.HandheldProController.id
+                    ControllerType.HandheldProController -> if (preferenceSettings.isDocked) ControllerType.ProController.id else ControllerType.HandheldProController.id
                     ControllerType.ProController, ControllerType.JoyConLeft, ControllerType.JoyConRight -> controller.type.id
                 }
 
@@ -247,10 +247,9 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         val rom = intent.data!!
         val romType = getRomFormat(rom, contentResolver).ordinal
         val romFd = contentResolver.openFileDescriptor(rom, "r")!!
-        val preferenceFd = ParcelFileDescriptor.open(File("${applicationInfo.dataDir}/shared_prefs/${applicationInfo.packageName}_preferences.xml"), ParcelFileDescriptor.MODE_READ_WRITE)
 
         emulationThread = Thread {
-            executeApplication(rom.toString(), romType, romFd.detachFd(), preferenceFd.detachFd(), settings.systemLanguage, applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
+            executeApplication(rom.toString(), romType, romFd.detachFd(), NativeSettings(preferenceSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
             returnFromEmulation()
         }
 
@@ -264,7 +263,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     @SuppressLint("SetTextI18n", "ClickableViewAccessibility")
     override fun onCreate(savedInstanceState : Bundle?) {
         super.onCreate(savedInstanceState)
-        requestedOrientation = settings.orientation
+        requestedOrientation = preferenceSettings.orientation
         window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         setContentView(binding.root)
 
@@ -279,7 +278,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             }
         }
 
-        if (settings.respectDisplayCutout) {
+        if (preferenceSettings.respectDisplayCutout) {
             binding.perfStats.setOnApplyWindowInsetsListener(insetsOrMarginHandler)
             binding.onScreenControllerToggle.setOnApplyWindowInsetsListener(insetsOrMarginHandler)
         }
@@ -287,14 +286,14 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         binding.gameView.holder.addCallback(this)
 
         binding.gameView.setAspectRatio(
-            when (settings.aspectRatio) {
+            when (preferenceSettings.aspectRatio) {
                 0 -> Rational(16, 9)
                 1 -> Rational(21, 9)
                 else -> null
             }
         )
 
-        if (settings.perfStats) {
+        if (preferenceSettings.perfStats) {
             binding.perfStats.apply {
                 postDelayed(object : Runnable {
                     override fun run() {
@@ -306,7 +305,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             }
         }
 
-        force60HzRefreshRate(!settings.maxRefreshRate)
+        force60HzRefreshRate(!preferenceSettings.maxRefreshRate)
         getSystemService<DisplayManager>()?.registerDisplayListener(this, null)
 
         binding.gameView.setOnTouchListener(this)
@@ -315,11 +314,11 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         binding.onScreenControllerView.apply {
             inputManager.controllers[0]!!.type.let {
                 controllerType = it
-                isGone = it == ControllerType.None || !settings.onScreenControl
+                isGone = it == ControllerType.None || !preferenceSettings.onScreenControl
             }
             setOnButtonStateChangedListener(::onButtonStateChanged)
             setOnStickStateChangedListener(::onStickStateChanged)
-            recenterSticks = settings.onScreenControlRecenterSticks
+            recenterSticks = preferenceSettings.onScreenControlRecenterSticks
         }
 
         binding.onScreenControllerToggle.apply {
@@ -381,7 +380,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
             // Note: We need FRAME_RATE_COMPATIBILITY_FIXED_SOURCE as there will be a degradation of user experience with FRAME_RATE_COMPATIBILITY_DEFAULT due to game speed alterations when the frame rate doesn't match the display refresh rate
-            holder.surface.setFrameRate(desiredRefreshRate, if (settings.maxRefreshRate) Surface.FRAME_RATE_COMPATIBILITY_DEFAULT else Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
+            holder.surface.setFrameRate(desiredRefreshRate, if (preferenceSettings.maxRefreshRate) Surface.FRAME_RATE_COMPATIBILITY_DEFAULT else Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
 
         while (emulationThread!!.isAlive)
             if (setSurface(holder.surface))
@@ -395,7 +394,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         Log.d(Tag, "surfaceChanged Holder: $holder, Format: $format, Width: $width, Height: $height")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-            holder.surface.setFrameRate(desiredRefreshRate, if (settings.maxRefreshRate) Surface.FRAME_RATE_COMPATIBILITY_DEFAULT else Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
+            holder.surface.setFrameRate(desiredRefreshRate, if (preferenceSettings.maxRefreshRate) Surface.FRAME_RATE_COMPATIBILITY_DEFAULT else Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
     }
 
     override fun surfaceDestroyed(holder : SurfaceHolder) {
@@ -652,7 +651,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     override fun onDisplayChanged(displayId : Int) {
         val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display!! else windowManager.defaultDisplay
         if (display.displayId == displayId)
-            force60HzRefreshRate(!settings.maxRefreshRate)
+            force60HzRefreshRate(!preferenceSettings.maxRefreshRate)
     }
 
     override fun onDisplayAdded(displayId : Int) {}

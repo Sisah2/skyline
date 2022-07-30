@@ -19,12 +19,13 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
 
     void Maxwell3D::FlushDeferredDraw() {
         if (deferredDraw.pending) {
+            deferredDraw.pending = false;
+
             if (deferredDraw.indexed)
                 context.DrawIndexed(deferredDraw.drawCount, deferredDraw.drawFirst, deferredDraw.instanceCount, deferredDraw.drawBaseVertex);
             else
                 context.Draw(deferredDraw.drawCount, deferredDraw.drawFirst, deferredDraw.instanceCount);
 
-            deferredDraw.pending = false;
             deferredDraw.instanceCount = 1;
         }
     }
@@ -55,7 +56,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                 #undef CBUF_UPDATE_CALLBACKS
                 default:
                     // When a method other than constant buffer update is called submit our submit the previously built-up update as a batch
-                    context.ConstantBufferUpdate(std::move(batchConstantBufferUpdate.buffer), batchConstantBufferUpdate.startOffset);
+                    context.ConstantBufferUpdate(batchConstantBufferUpdate.buffer, batchConstantBufferUpdate.Invalidate());
                     batchConstantBufferUpdate.Reset();
                     break; // Continue on here to handle the actual method
             }
@@ -405,10 +406,6 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
 
                 ENGINE_STRUCT_CASE(blendStateCommon, alphaDstFactor, {
                     context.SetDstAlphaBlendFactor(alphaDstFactor);
-                })
-
-                ENGINE_STRUCT_CASE(blendStateCommon, enable, {
-                    context.SetColorBlendEnabled(enable);
                 })
 
                 #define SET_COLOR_BLEND_ENABLE_CALLBACK(z, index, data) \
@@ -775,12 +772,12 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
     }
 
     void Maxwell3D::FlushEngineState() {
+        FlushDeferredDraw();
+
         if (batchConstantBufferUpdate.Active()) {
-            context.ConstantBufferUpdate(std::move(batchConstantBufferUpdate.buffer), batchConstantBufferUpdate.startOffset);
+            context.ConstantBufferUpdate(batchConstantBufferUpdate.buffer, batchConstantBufferUpdate.Invalidate());
             batchConstantBufferUpdate.Reset();
         }
-
-        FlushDeferredDraw();
     }
 
     __attribute__((always_inline)) void Maxwell3D::CallMethod(u32 method, u32 argument) {

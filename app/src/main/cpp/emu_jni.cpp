@@ -3,13 +3,12 @@
 
 #include <csignal>
 #include <pthread.h>
-#include <unistd.h>
 #include <android/asset_manager_jni.h>
 #include <sys/system_properties.h>
 #include "skyline/common.h"
 #include "skyline/common/language.h"
 #include "skyline/common/signal.h"
-#include "skyline/common/settings.h"
+#include "skyline/common/android_settings.h"
 #include "skyline/common/trace.h"
 #include "skyline/loader/loader.h"
 #include "skyline/vfs/android_asset_filesystem.h"
@@ -28,6 +27,7 @@ std::weak_ptr<skyline::kernel::OS> OsWeak;
 std::weak_ptr<skyline::gpu::GPU> GpuWeak;
 std::weak_ptr<skyline::audio::Audio> AudioWeak;
 std::weak_ptr<skyline::input::Input> InputWeak;
+std::weak_ptr<skyline::Settings> SettingsWeak;
 
 // https://cs.android.com/android/platform/superproject/+/master:bionic/libc/tzcode/bionic.cpp;l=43;drc=master;bpv=1;bpt=1
 static std::string GetTimeZoneName() {
@@ -57,12 +57,12 @@ static std::string GetTimeZoneName() {
 extern "C" JNIEXPORT void Java_emu_skyline_SkylineApplication_initializeLog(
     JNIEnv *env,
     jobject,
-    jstring appFilesPathJstring,
+    jstring publicAppFilesPathJstring,
     jint logLevel
 ) {
-    std::string appFilesPath{env->GetStringUTFChars(appFilesPathJstring, nullptr)};
+    skyline::JniString publicAppFilesPath(env, publicAppFilesPathJstring);
     skyline::Logger::configLevel = static_cast<skyline::Logger::LogLevel>(logLevel);
-    skyline::Logger::LoaderContext.Initialize(appFilesPath + "logs/loader.sklog");
+    skyline::Logger::LoaderContext.Initialize(publicAppFilesPath + "logs/loader.sklog");
 }
 
 extern "C" JNIEXPORT void Java_emu_skyline_EmulationActivity_executeApplication(
@@ -71,8 +71,7 @@ extern "C" JNIEXPORT void Java_emu_skyline_EmulationActivity_executeApplication(
     jstring romUriJstring,
     jint romType,
     jint romFd,
-    jint preferenceFd,
-    jint systemLanguage,
+    jobject settingsInstance,
     jstring publicAppFilesPathJstring,
     jstring privateAppFilesPathJstring,
     jstring nativeLibraryPathJstring,
@@ -85,8 +84,8 @@ extern "C" JNIEXPORT void Java_emu_skyline_EmulationActivity_executeApplication(
     pthread_setname_np(pthread_self(), "EmuMain");
 
     auto jvmManager{std::make_shared<skyline::JvmManager>(env, instance)};
-    auto settings{std::make_shared<skyline::Settings>(preferenceFd)};
-    close(preferenceFd);
+
+    std::shared_ptr<skyline::Settings> settings{std::make_shared<skyline::AndroidSettings>(env, settingsInstance)};
 
     skyline::JniString publicAppFilesPath(env, publicAppFilesPathJstring);
     skyline::Logger::EmulationContext.Initialize(publicAppFilesPath + "logs/emulation.sklog");
@@ -110,13 +109,13 @@ extern "C" JNIEXPORT void Java_emu_skyline_EmulationActivity_executeApplication(
             privateAppFilesPath,
             nativeLibraryPath,
             GetTimeZoneName(),
-            static_cast<skyline::language::SystemLanguage>(systemLanguage),
             std::make_shared<skyline::vfs::AndroidAssetFileSystem>(AAssetManager_fromJava(env, assetManager))
         )};
         OsWeak = os;
         GpuWeak = os->state.gpu;
         AudioWeak = os->state.audio;
         InputWeak = os->state.input;
+        SettingsWeak = settings;
         jvmManager->InitializeControllers();
 
         skyline::Logger::InfoNoPrefix("Launching ROM {}", skyline::JniString(env, romUriJstring));
@@ -230,4 +229,15 @@ extern "C" JNIEXPORT void JNICALL Java_emu_skyline_EmulationActivity_setTouchSta
                                 static_cast<size_t>(env->GetArrayLength(pointsJni)) / (sizeof(Point) / sizeof(jint)));
     input->touch.SetState(points);
     env->ReleaseIntArrayElements(pointsJni, reinterpret_cast<jint *>(points.data()), JNI_ABORT);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_emu_skyline_utils_NativeSettings_updateNative(JNIEnv *env, jobject) {
+    auto settings{SettingsWeak.lock()};
+    if (!settings)
+        return; // We don't mind if we miss settings updates while settings haven't been initialized
+    settings->Update();
+}
+
+extern "C" JNIEXPORT void JNICALL Java_emu_skyline_utils_NativeSettings_00024Companion_setLogLevel(JNIEnv *, jobject, jint logLevel) {
+    skyline::Logger::configLevel = static_cast<skyline::Logger::LogLevel>(logLevel);
 }

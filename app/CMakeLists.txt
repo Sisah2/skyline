@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 
 set(source_DIR ${CMAKE_SOURCE_DIR}/src/main/cpp)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-strict-aliasing -Wno-unused-command-line-argument")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-strict-aliasing -Wno-unused-command-line-argument -fwrapv")
 set(CMAKE_CXX_FLAGS_RELEASE "-Ofast -flto=full -fno-stack-protector -DNDEBUG")
 
 # Build all libraries with -Ofast but with default debug data (-g) for debug builds
@@ -74,9 +74,6 @@ include_directories("libraries/vkma/include")
 add_library(vkma STATIC libraries/vkma.cpp)
 target_compile_options(vkma PRIVATE -Wno-everything)
 
-# PugiXML (Header-only mode)
-include_directories(SYSTEM "libraries/pugixml/src")
-
 # Frozen
 include_directories(SYSTEM "libraries/frozen/include")
 
@@ -137,7 +134,6 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/common.cpp
         ${source_DIR}/skyline/common/exception.cpp
         ${source_DIR}/skyline/common/logger.cpp
-        ${source_DIR}/skyline/common/settings.cpp
         ${source_DIR}/skyline/common/signal.cpp
         ${source_DIR}/skyline/common/uuid.cpp
         ${source_DIR}/skyline/common/trace.cpp
