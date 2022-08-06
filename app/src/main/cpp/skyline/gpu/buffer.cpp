@@ -8,13 +8,6 @@
 #include "buffer.h"
 
 namespace skyline::gpu {
-    bool Buffer::CheckHostImmutable() {
-        if (hostImmutableCycle && hostImmutableCycle->Poll())
-            hostImmutableCycle.reset();
-
-        return hostImmutableCycle != nullptr;
-    }
-
     void Buffer::SetupGuestMappings() {
         u8 *alignedData{util::AlignDown(guest->data(), PAGE_SIZE)};
         size_t alignedSize{static_cast<size_t>(util::AlignUp(guest->data() + guest->size(), PAGE_SIZE) - alignedData)};
@@ -22,238 +15,226 @@ namespace skyline::gpu {
         alignedMirror = gpu.state.process->memory.CreateMirror(span<u8>{alignedData, alignedSize});
         mirror = alignedMirror.subspan(static_cast<size_t>(guest->data() - alignedData), guest->size());
 
-        trapHandle = gpu.state.nce->TrapRegions(*guest, true, [this] {
-            std::scoped_lock lock{*this};
-            SynchronizeGuest(true); // We can skip trapping since the caller will do it
-            WaitOnFence();
-        }, [this] {
-            std::scoped_lock lock{*this};
-            SynchronizeGuest(true);
-            dirtyState = DirtyState::CpuDirty; // We need to assume the buffer is dirty since we don't know what the guest is writing
-            WaitOnFence();
+        // We can't just capture this in the lambda since the lambda could exceed the lifetime of the buffer
+        std::weak_ptr<Buffer> weakThis{shared_from_this()};
+        trapHandle = gpu.state.nce->CreateTrap(*guest, [weakThis] {
+            auto buffer{weakThis.lock()};
+            if (!buffer)
+                return;
+
+            std::unique_lock stateLock{buffer->stateMutex};
+            if (buffer->AllCpuBackingWritesBlocked()) {
+                stateLock.unlock(); // If the lock isn't unlocked, a deadlock from threads waiting on the other lock can occur
+
+                // If this mutex would cause other callbacks to be blocked then we should block on this mutex in advance
+                std::scoped_lock lock{*buffer};
+            }
+        }, [weakThis] {
+            TRACE_EVENT("gpu", "Buffer::ReadTrap");
+
+            auto buffer{weakThis.lock()};
+            if (!buffer)
+                return true;
+
+            std::unique_lock stateLock{buffer->stateMutex, std::try_to_lock};
+            if (!stateLock)
+                return false;
+
+            if (buffer->dirtyState != DirtyState::GpuDirty)
+                return true; // If state is already CPU dirty/Clean we don't need to do anything
+
+            std::unique_lock lock{*buffer, std::try_to_lock};
+            if (!lock)
+                return false;
+
+            buffer->SynchronizeGuest(true); // We can skip trapping since the caller will do it
+            return true;
+        }, [weakThis] {
+            TRACE_EVENT("gpu", "Buffer::WriteTrap");
+
+            auto buffer{weakThis.lock()};
+            if (!buffer)
+                return true;
+
+            std::unique_lock stateLock{buffer->stateMutex, std::try_to_lock};
+            if (!stateLock)
+                return false;
+
+            if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty) {
+                buffer->dirtyState = DirtyState::CpuDirty;
+                return true;
+            }
+
+            std::unique_lock lock{*buffer, std::try_to_lock};
+            if (!lock)
+                return false;
+
+            buffer->WaitOnFence();
+            buffer->SynchronizeGuest(true); // We need to assume the buffer is dirty since we don't know what the guest is writing
+            buffer->dirtyState = DirtyState::CpuDirty;
+
+            return true;
         });
     }
 
-    Buffer::Buffer(GPU &gpu, GuestBuffer guest) : gpu(gpu), backing(gpu.memory.AllocateBuffer(guest.size())), guest(guest) {
-        SetupGuestMappings();
-    }
-
-    Buffer::Buffer(GPU &gpu, const std::shared_ptr<FenceCycle> &pCycle, GuestBuffer guest, span<std::shared_ptr<Buffer>> srcBuffers) : gpu(gpu), backing(gpu.memory.AllocateBuffer(guest.size())), guest(guest) {
-        std::scoped_lock bufLock{*this};
-        SetupGuestMappings();
-
-        // Source buffers don't necessarily fully overlap with us so we have to perform a sync here to prevent any gaps
-        SynchronizeHost(false);
-
-        // Copies between two buffers based off of their mappings in guest memory
-        auto copyBuffer{[](auto dstGuest, auto srcGuest, auto dstPtr, auto srcPtr) {
-            if (dstGuest.begin().base() <= srcGuest.begin().base()) {
-                size_t dstOffset{static_cast<size_t>(srcGuest.begin().base() - dstGuest.begin().base())};
-                size_t copySize{std::min(dstGuest.size() - dstOffset, srcGuest.size())};
-                std::memcpy(dstPtr + dstOffset, srcPtr, copySize);
-            } else if (dstGuest.begin().base() > srcGuest.begin().base()) {
-                size_t srcOffset{static_cast<size_t>(dstGuest.begin().base() - srcGuest.begin().base())};
-                size_t copySize{std::min(dstGuest.size(), srcGuest.size() - srcOffset)};
-                std::memcpy(dstPtr, srcPtr + srcOffset, copySize);
-            }
-        }};
-
-        // Transfer data/state from source buffers
-        for (const auto &srcBuffer : srcBuffers) {
-            std::scoped_lock lock{*srcBuffer};
-            if (srcBuffer->guest) {
-                if (srcBuffer->hostImmutableCycle) {
-                    // Propagate any host immutability
-                    if (hostImmutableCycle) {
-                        if (srcBuffer->hostImmutableCycle.owner_before(hostImmutableCycle))
-                            hostImmutableCycle = srcBuffer->hostImmutableCycle;
-                    } else {
-                        hostImmutableCycle = srcBuffer->hostImmutableCycle;
-                    }
-                }
-
-                if (srcBuffer->dirtyState == Buffer::DirtyState::GpuDirty) {
-                    // If the source buffer is GPU dirty we cannot directly copy over its GPU backing contents
-
-                    // Only sync back the buffer if it's not attached to the current fence cycle, otherwise propagate the GPU dirtiness
-                    if (!srcBuffer->cycle.owner_before(pCycle)) {
-                        // Perform a GPU -> CPU sync on the source then do a CPU -> GPU sync for the region occupied by the source
-                        // This is required since if we were created from a two buffers: one GPU dirty in the current cycle, and one GPU dirty in the previous cycle, if we marked ourselves as CPU dirty here then the GPU dirtiness from the current cycle buffer would be ignored and cause writes to be missed
-                        srcBuffer->SynchronizeGuest(true);
-                        copyBuffer(guest, *srcBuffer->guest, backing.data(), srcBuffer->mirror.data());
-                    } else {
-                        MarkGpuDirty();
-                    }
-                } else if (srcBuffer->dirtyState == Buffer::DirtyState::Clean) {
-                    // For clean buffers we can just copy over the GPU backing data directly
-                    // This is necessary since clean buffers may not have matching GPU/CPU data in the case of inline updates for host immutable buffers
-                    copyBuffer(guest, *srcBuffer->guest, backing.data(), srcBuffer->backing.data());
-                }
-
-                // CPU dirty buffers are already synchronized in the initial SynchronizeHost call so don't need special handling
-            }
-        }
-    }
+    Buffer::Buffer(GPU &gpu, GuestBuffer guest) : gpu{gpu}, backing{gpu.memory.AllocateBuffer(guest.size())}, guest{guest} {}
 
     Buffer::Buffer(GPU &gpu, vk::DeviceSize size) : gpu(gpu), backing(gpu.memory.AllocateBuffer(size)) {
         dirtyState = DirtyState::Clean; // Since this is a host-only buffer it's always going to be clean
     }
 
     Buffer::~Buffer() {
-        std::scoped_lock lock{*this};
         if (trapHandle)
             gpu.state.nce->DeleteTrap(*trapHandle);
         SynchronizeGuest(true);
         if (alignedMirror.valid())
             munmap(alignedMirror.data(), alignedMirror.size());
+        WaitOnFence();
     }
 
     void Buffer::MarkGpuDirty() {
-        if (dirtyState == DirtyState::GpuDirty || !guest)
+        if (!guest)
             return;
 
-        AdvanceSequence(); // The GPU will modify buffer contents so advance to the next sequence
-        gpu.state.nce->RetrapRegions(*trapHandle, false);
+        std::scoped_lock lock{stateMutex}; // stateMutex is locked to prevent state changes at any point during this function
+
+        if (dirtyState == DirtyState::GpuDirty)
+            return;
+
+        gpu.state.nce->TrapRegions(*trapHandle, false); // This has to occur prior to any synchronization as it'll skip trapping
+
+        if (dirtyState == DirtyState::CpuDirty)
+            SynchronizeHost(true); // Will transition the Buffer to Clean
+
         dirtyState = DirtyState::GpuDirty;
+        gpu.state.nce->PageOutRegions(*trapHandle); // All data can be paged out from the guest as the guest mirror won't be used
+
+        BlockAllCpuBackingWrites();
+        AdvanceSequence(); // The GPU will modify buffer contents so advance to the next sequence
     }
 
     void Buffer::WaitOnFence() {
         TRACE_EVENT("gpu", "Buffer::WaitOnFence");
 
-        auto lCycle{cycle.lock()};
-        if (lCycle) {
-            lCycle->Wait();
-            cycle.reset();
+        std::scoped_lock lock{stateMutex};
+
+        if (cycle) {
+            cycle->Wait();
+            cycle = nullptr;
         }
     }
 
     bool Buffer::PollFence() {
-        auto lCycle{cycle.lock()};
-        if (lCycle && lCycle->Poll()) {
-            cycle.reset();
+        std::scoped_lock lock{stateMutex};
+
+        if (!cycle)
+            return true;
+
+        if (cycle->Poll()) {
+            cycle = nullptr;
             return true;
         }
+
         return false;
     }
 
-    void Buffer::SynchronizeHost(bool rwTrap) {
-        if (dirtyState != DirtyState::CpuDirty || !guest)
-            return; // If the buffer has not been modified on the CPU or there's no guest buffer, there is no need to synchronize it
+    void Buffer::Invalidate() {
+        if (trapHandle) {
+            gpu.state.nce->DeleteTrap(*trapHandle);
+            trapHandle = {};
+        }
 
-        WaitOnFence();
+        // Will prevent any sync operations so even if the trap handler is partway through running and hasn't yet acquired the lock it won't do anything
+        guest = {};
+    }
+
+    void Buffer::SynchronizeHost(bool skipTrap) {
+        if (!guest)
+            return;
 
         TRACE_EVENT("gpu", "Buffer::SynchronizeHost");
 
-        AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
-        std::memcpy(backing.data(), mirror.data(), mirror.size());
+        {
+            std::scoped_lock lock{stateMutex};
+            if (dirtyState != DirtyState::CpuDirty)
+                return;
 
-        if (rwTrap) {
-            gpu.state.nce->RetrapRegions(*trapHandle, false);
-            dirtyState = DirtyState::GpuDirty;
-        } else {
-            gpu.state.nce->RetrapRegions(*trapHandle, true);
             dirtyState = DirtyState::Clean;
-        }
-    }
-
-    void Buffer::SynchronizeHostWithCycle(const std::shared_ptr<FenceCycle> &pCycle, bool rwTrap) {
-        if (dirtyState != DirtyState::CpuDirty || !guest)
-            return;
-
-        if (!cycle.owner_before(pCycle))
             WaitOnFence();
 
-        TRACE_EVENT("gpu", "Buffer::SynchronizeHostWithCycle");
+            AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
 
-        AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
-        std::memcpy(backing.data(), mirror.data(), mirror.size());
-
-        if (rwTrap) {
-            gpu.state.nce->RetrapRegions(*trapHandle, false);
-            dirtyState = DirtyState::GpuDirty;
-        } else {
-            gpu.state.nce->RetrapRegions(*trapHandle, true);
-            dirtyState = DirtyState::Clean;
+            if (!skipTrap)
+                gpu.state.nce->TrapRegions(*trapHandle, true); // Trap any future CPU writes to this buffer, must be done before the memcpy so that any modifications during the copy are tracked
         }
+
+        std::memcpy(backing.data(), mirror.data(), mirror.size());
     }
 
-    void Buffer::SynchronizeGuest(bool skipTrap, bool nonBlocking) {
-        if (dirtyState != DirtyState::GpuDirty || !guest)
-            return; // If the buffer has not been used on the GPU or there's no guest buffer, there is no need to synchronize it
-
-        if (nonBlocking && !PollFence())
-            return;
-        else if (!nonBlocking)
-            WaitOnFence();
+    bool Buffer::SynchronizeGuest(bool skipTrap, bool nonBlocking) {
+        if (!guest)
+            return false;
 
         TRACE_EVENT("gpu", "Buffer::SynchronizeGuest");
 
-        std::memcpy(mirror.data(), backing.data(), mirror.size());
+        {
+            std::scoped_lock lock{stateMutex};
+
+            if (dirtyState != DirtyState::GpuDirty)
+                return true; // If the buffer is not dirty, there is no need to synchronize it
+
+            if (nonBlocking && !PollFence())
+                return false; // If the fence is not signalled and non-blocking behaviour is requested then bail out
+
+            WaitOnFence();
+            std::memcpy(mirror.data(), backing.data(), mirror.size());
+
+            dirtyState = DirtyState::Clean;
+        }
 
         if (!skipTrap)
-            gpu.state.nce->RetrapRegions(*trapHandle, true);
+            gpu.state.nce->TrapRegions(*trapHandle, true);
 
-        dirtyState = DirtyState::Clean;
+        return true;
     }
 
-    /**
-     * @brief A FenceCycleDependency that synchronizes the contents of a host buffer with the guest buffer
-     */
-    struct BufferGuestSync : public FenceCycleDependency {
-        std::shared_ptr<Buffer> buffer;
-
-        explicit BufferGuestSync(std::shared_ptr<Buffer> buffer) : buffer(std::move(buffer)) {}
-
-        ~BufferGuestSync() {
-            TRACE_EVENT("gpu", "Buffer::BufferGuestSync");
-            buffer->SynchronizeGuest();
-        }
-    };
-
-    void Buffer::SynchronizeGuestWithCycle(const std::shared_ptr<FenceCycle> &pCycle) {
-        if (!cycle.owner_before(pCycle))
-            WaitOnFence();
-
-        pCycle->AttachObject(std::make_shared<BufferGuestSync>(shared_from_this()));
-        cycle = pCycle;
-    }
-
-    void Buffer::SynchronizeGuestImmediate(const std::shared_ptr<FenceCycle> &pCycle, const std::function<void()> &flushHostCallback) {
+    void Buffer::SynchronizeGuestImmediate(bool isFirstUsage, const std::function<void()> &flushHostCallback) {
         // If this buffer was attached to the current cycle, flush all pending host GPU work and wait to ensure that we read valid data
-        if (cycle.owner_before(pCycle))
+        if (!isFirstUsage)
             flushHostCallback();
 
         SynchronizeGuest();
     }
 
-    void Buffer::Read(const std::shared_ptr<FenceCycle> &pCycle, const std::function<void()> &flushHostCallback, span<u8> data, vk::DeviceSize offset) {
+    void Buffer::Read(bool isFirstUsage, const std::function<void()> &flushHostCallback, span<u8> data, vk::DeviceSize offset) {
+        std::scoped_lock lock{stateMutex};
         if (dirtyState == DirtyState::GpuDirty)
-            SynchronizeGuestImmediate(pCycle, flushHostCallback);
+            SynchronizeGuestImmediate(isFirstUsage, flushHostCallback);
 
         std::memcpy(data.data(), mirror.data() + offset, data.size());
     }
 
-    void Buffer::Write(const std::shared_ptr<FenceCycle> &pCycle, const std::function<void()> &flushHostCallback, const std::function<void()> &gpuCopyCallback, span<u8> data, vk::DeviceSize offset) {
+    void Buffer::Write(bool isFirstUsage, const std::function<void()> &flushHostCallback, const std::function<void()> &gpuCopyCallback, span<u8> data, vk::DeviceSize offset) {
         AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
         everHadInlineUpdate = true;
 
-        // Perform a syncs in both directions to ensure correct ordering of writes
-        if (dirtyState == DirtyState::CpuDirty)
-            SynchronizeHostWithCycle(pCycle);
-        else if (dirtyState == DirtyState::GpuDirty)
-            SynchronizeGuestImmediate(pCycle, flushHostCallback);
+        // We cannot have *ANY* state changes for the duration of this function, if the buffer became CPU dirty partway through the GPU writes would mismatch the CPU writes
+        std::scoped_lock lock{stateMutex};
 
-        if (dirtyState != DirtyState::Clean)
-            Logger::Error("Attempting to write to a dirty buffer"); // This should never happen since we do syncs in both directions above
+        // Syncs in both directions to ensure correct ordering of writes
+        if (dirtyState == DirtyState::CpuDirty)
+            SynchronizeHost();
+        else if (dirtyState == DirtyState::GpuDirty)
+            SynchronizeGuestImmediate(isFirstUsage, flushHostCallback);
 
         std::memcpy(mirror.data() + offset, data.data(), data.size()); // Always copy to mirror since any CPU side reads will need the up-to-date contents
 
-        if (CheckHostImmutable())
-            // Perform a GPU-side inline update for the buffer contents if this buffer is host immutable since we can't directly modify the backing
-            gpuCopyCallback();
-        else
-            // If that's not the case we don't need to do any GPU-side sequencing here, we can write directly to the backing and the sequencing for it will be handled at usage time
+        if (!SequencedCpuBackingWritesBlocked() && PollFence())
+            // We can write directly to the backing as long as this resource isn't being actively used by a past workload (in the current context or another)
             std::memcpy(backing.data() + offset, data.data(), data.size());
+        else
+            // If this buffer is host immutable, perform a GPU-side inline update for the buffer contents since we can't directly modify the backing
+            gpuCopyCallback();
     }
 
     BufferView Buffer::GetView(vk::DeviceSize offset, vk::DeviceSize size, vk::Format format) {
@@ -263,10 +244,8 @@ namespace skyline::gpu {
     }
 
     std::pair<u64, span<u8>> Buffer::AcquireCurrentSequence() {
-        SynchronizeGuest(false, true); // First try to remove GPU dirtiness by doing an immediate sync and taking a quick shower
-
-        if (dirtyState == DirtyState::GpuDirty)
-            // Bail out if buffer is GPU dirty - since we don't know the contents ahead of time the sequence is indeterminate
+        if (!SynchronizeGuest(false, true))
+            // Bail out if buffer cannot be synced, we don't know the contents ahead of time so the sequence is indeterminate
             return {};
 
         SynchronizeHost(); // Ensure that the returned mirror is fully up-to-date by performing a CPU -> GPU sync
@@ -278,15 +257,35 @@ namespace skyline::gpu {
         sequenceNumber++;
     }
 
-    span<u8> Buffer::GetReadOnlyBackingSpan(const std::shared_ptr<FenceCycle> &pCycle, const std::function<void()> &flushHostCallback) {
+    span<u8> Buffer::GetReadOnlyBackingSpan(bool isFirstUsage, const std::function<void()> &flushHostCallback) {
+        std::scoped_lock lock{stateMutex};
         if (dirtyState == DirtyState::GpuDirty)
-            SynchronizeGuestImmediate(pCycle, flushHostCallback);
+            SynchronizeGuestImmediate(isFirstUsage, flushHostCallback);
 
         return mirror;
     }
 
-    void Buffer::MarkHostImmutable(const std::shared_ptr<FenceCycle> &pCycle) {
-        hostImmutableCycle = pCycle;
+    void Buffer::lock() {
+        mutex.lock();
+    }
+
+    bool Buffer::LockWithTag(ContextTag pTag) {
+        if (pTag && pTag == tag)
+            return false;
+
+        mutex.lock();
+        tag = pTag;
+        return true;
+    }
+
+    void Buffer::unlock() {
+        tag = ContextTag{};
+        backingImmutability = BackingImmutability::None;
+        mutex.unlock();
+    }
+
+    bool Buffer::try_lock() {
+        return mutex.try_lock();
     }
 
     Buffer::BufferViewStorage::BufferViewStorage(vk::DeviceSize offset, vk::DeviceSize size, vk::Format format) : offset(offset), size(size), format(format) {}
@@ -296,22 +295,19 @@ namespace skyline::gpu {
     }
 
     Buffer::BufferDelegate::~BufferDelegate() {
-        std::scoped_lock lock(*this);
         buffer->delegates.erase(iterator);
     }
 
     void Buffer::BufferDelegate::lock() {
-        auto lBuffer{std::atomic_load(&buffer)};
-        while (true) {
-            lBuffer->lock();
+        buffer.Lock();
+    }
 
-            auto latestBacking{std::atomic_load(&buffer)};
-            if (lBuffer == latestBacking)
-                return;
-
-            lBuffer->unlock();
-            lBuffer = latestBacking;
-        }
+    bool Buffer::BufferDelegate::LockWithTag(ContextTag pTag) {
+        bool result{};
+        buffer.Lock([pTag, &result](Buffer *pBuffer) {
+            result = pBuffer->LockWithTag(pTag);
+        });
+        return result;
     }
 
     void Buffer::BufferDelegate::unlock() {
@@ -319,36 +315,14 @@ namespace skyline::gpu {
     }
 
     bool Buffer::BufferDelegate::try_lock() {
-        auto lBuffer{std::atomic_load(&buffer)};
-        while (true) {
-            bool success{lBuffer->try_lock()};
-
-            auto latestBuffer{std::atomic_load(&buffer)};
-            if (lBuffer == latestBuffer)
-                // We want to ensure that the try_lock() was on the latest backing and not on an outdated one
-                return success;
-
-            if (success)
-                // We only unlock() if the try_lock() was successful and we acquired the mutex
-                lBuffer->unlock();
-            lBuffer = latestBuffer;
-        }
+        return buffer.TryLock();
     }
 
     BufferView::BufferView(std::shared_ptr<Buffer> buffer, const Buffer::BufferViewStorage *view) : bufferDelegate(std::make_shared<Buffer::BufferDelegate>(std::move(buffer), view)) {}
 
-    void BufferView::AttachCycle(const std::shared_ptr<FenceCycle> &cycle) {
-        auto buffer{bufferDelegate->buffer.get()};
-        if (!buffer->cycle.owner_before(cycle)) {
-            buffer->WaitOnFence();
-            buffer->cycle = cycle;
-            cycle->AttachObject(bufferDelegate);
-        }
-    }
-
-    void BufferView::RegisterUsage(const std::shared_ptr<FenceCycle> &pCycle, const std::function<void(const Buffer::BufferViewStorage &, const std::shared_ptr<Buffer> &)> &usageCallback) {
-        // Users of RegisterUsage expect the buffer contents to be sequenced as the guest GPU would be, so force any further writes in the current cycle to occur on the GPU
-        bufferDelegate->buffer->MarkHostImmutable(pCycle);
+    void BufferView::RegisterUsage(const std::shared_ptr<FenceCycle> &cycle, const std::function<void(const Buffer::BufferViewStorage &, const std::shared_ptr<Buffer> &)> &usageCallback) {
+        // Users of RegisterUsage expect the buffer contents to be sequenced as the guest GPU would be, so force any further sequenced writes in the current cycle to occur on the GPU
+        bufferDelegate->buffer->BlockSequencedCpuBackingWrites();
 
         usageCallback(*bufferDelegate->view, bufferDelegate->buffer);
         if (!bufferDelegate->usageCallback) {
@@ -361,48 +335,47 @@ namespace skyline::gpu {
         }
     }
 
-    void BufferView::Read(const std::shared_ptr<FenceCycle> &pCycle, const std::function<void()> &flushHostCallback, span<u8> data, vk::DeviceSize offset) const {
-        bufferDelegate->buffer->Read(pCycle, flushHostCallback, data, offset + bufferDelegate->view->offset);
+    void BufferView::Read(bool isFirstUsage, const std::function<void()> &flushHostCallback, span<u8> data, vk::DeviceSize offset) const {
+        bufferDelegate->buffer->Read(isFirstUsage, flushHostCallback, data, offset + bufferDelegate->view->offset);
     }
 
-    void BufferView::Write(const std::shared_ptr<FenceCycle> &pCycle, const std::function<void()> &flushHostCallback, const std::function<void()> &gpuCopyCallback, span<u8> data, vk::DeviceSize offset) const {
+    void BufferView::Write(bool isFirstUsage, const std::shared_ptr<FenceCycle> &pCycle, const std::function<void()> &flushHostCallback, const std::function<void()> &gpuCopyCallback, span<u8> data, vk::DeviceSize offset) const {
         // If megabuffering can't be enabled we have to do a GPU-side copy to ensure sequencing
         bool gpuCopy{bufferDelegate->view->size > MegaBufferingDisableThreshold};
         if (gpuCopy)
-            // This will force the host buffer contents to stay as is for the current cycle, requiring that write operations are instead sequenced on the GPU for the entire buffer
-            bufferDelegate->buffer->MarkHostImmutable(pCycle);
+            bufferDelegate->buffer->BlockSequencedCpuBackingWrites();
 
-        bufferDelegate->buffer->Write(pCycle, flushHostCallback, gpuCopyCallback, data, offset + bufferDelegate->view->offset);
+        bufferDelegate->buffer->Write(isFirstUsage, flushHostCallback, gpuCopyCallback, data, offset + bufferDelegate->view->offset);
     }
 
-    vk::DeviceSize BufferView::AcquireMegaBuffer(MegaBuffer &megaBuffer) const {
+    MegaBufferAllocator::Allocation BufferView::AcquireMegaBuffer(const std::shared_ptr<FenceCycle> &pCycle, MegaBufferAllocator &allocator) const {
         if (!bufferDelegate->buffer->EverHadInlineUpdate())
             // Don't megabuffer buffers that have never had inline updates since performance is only going to be harmed as a result of the constant copying and there wont be any benefit since there are no GPU inline updates that would be avoided
-            return 0;
+            return {};
 
         if (bufferDelegate->view->size > MegaBufferingDisableThreshold)
-            return 0;
+            return {};
 
-        auto[newSequence, sequenceSpan]{bufferDelegate->buffer->AcquireCurrentSequence()};
+        auto [newSequence, sequenceSpan]{bufferDelegate->buffer->AcquireCurrentSequence()};
         if (!newSequence)
-            return 0; // If the sequence can't be acquired then the buffer is GPU dirty and we can't megabuffer
+            return {}; // If the sequence can't be acquired then the buffer is GPU dirty and we can't megabuffer
 
         // If a copy of the view for the current sequence is already in megabuffer then we can just use that
-        if (newSequence == bufferDelegate->view->lastAcquiredSequence && bufferDelegate->view->megabufferOffset)
-            return bufferDelegate->view->megabufferOffset;
+        if (newSequence == bufferDelegate->view->lastAcquiredSequence && bufferDelegate->view->megaBufferAllocation)
+            return bufferDelegate->view->megaBufferAllocation;
 
         // If the view is not in the megabuffer then we need to allocate a new copy
         auto viewBackingSpan{sequenceSpan.subspan(bufferDelegate->view->offset, bufferDelegate->view->size)};
 
         // TODO: we could optimise the alignment requirements here based on buffer usage
-        bufferDelegate->view->megabufferOffset = megaBuffer.Push(viewBackingSpan, true);
+        bufferDelegate->view->megaBufferAllocation = allocator.Push(pCycle, viewBackingSpan, true);
         bufferDelegate->view->lastAcquiredSequence = newSequence;
 
-        return bufferDelegate->view->megabufferOffset; // Success!
+        return bufferDelegate->view->megaBufferAllocation; // Success!
     }
 
-    span<u8> BufferView::GetReadOnlyBackingSpan(const std::shared_ptr<FenceCycle> &pCycle, const std::function<void()> &flushHostCallback) {
-        auto backing{bufferDelegate->buffer->GetReadOnlyBackingSpan(pCycle, flushHostCallback)};
+    span<u8> BufferView::GetReadOnlyBackingSpan(bool isFirstUsage, const std::function<void()> &flushHostCallback) {
+        auto backing{bufferDelegate->buffer->GetReadOnlyBackingSpan(isFirstUsage, flushHostCallback)};
         return backing.subspan(bufferDelegate->view->offset, bufferDelegate->view->size);
     }
 }

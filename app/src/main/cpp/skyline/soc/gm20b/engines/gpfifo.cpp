@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
-// Copyright © 2022 Ryujinx Team and Contributors (https://github.com/ryujinx/)
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
+// Copyright © 2022 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #include <soc.h>
 #include <soc/gm20b/gmmu.h>
@@ -19,7 +19,7 @@ namespace skyline::soc::gm20b::engine {
             ENGINE_STRUCT_CASE(syncpoint, action, {
                 if (action.operation == Registers::Syncpoint::Operation::Incr) {
                     Logger::Debug("Increment syncpoint: {}", +action.index);
-                    channelCtx.executor.Execute();
+                    channelCtx.executor.Submit();
                     syncpoints.at(action.index).Increment();
                 } else if (action.operation == Registers::Syncpoint::Operation::Wait) {
                     Logger::Debug("Wait syncpoint: {}, thresh: {}", +action.index, registers.syncpoint->payload);

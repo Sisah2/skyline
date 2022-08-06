@@ -2,17 +2,167 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu.h>
-
 #include "buffer_manager.h"
 
 namespace skyline::gpu {
-    BufferManager::BufferManager(GPU &gpu) : gpu(gpu) {}
+    BufferManager::BufferManager(GPU &gpu) : gpu{gpu} {}
 
     bool BufferManager::BufferLessThan(const std::shared_ptr<Buffer> &it, u8 *pointer) {
         return it->guest->begin().base() < pointer;
     }
 
-    BufferView BufferManager::FindOrCreate(GuestBuffer guestMapping, const std::shared_ptr<FenceCycle> &cycle) {
+    void BufferManager::lock() {
+        mutex.lock();
+    }
+
+    void BufferManager::unlock() {
+        mutex.unlock();
+    }
+
+    bool BufferManager::try_lock() {
+        return mutex.try_lock();
+    }
+
+    BufferManager::LockedBuffer::LockedBuffer(std::shared_ptr<Buffer> pBuffer, ContextTag tag) : buffer{std::move(pBuffer)}, lock{tag, *buffer}, stateLock(buffer->stateMutex) {}
+
+    Buffer *BufferManager::LockedBuffer::operator->() const {
+        return buffer.get();
+    }
+
+    std::shared_ptr<Buffer> &BufferManager::LockedBuffer::operator*() {
+        return buffer;
+    }
+
+    BufferManager::LockedBuffers BufferManager::Lookup(span<u8> range, ContextTag tag) {
+        LockedBuffers overlaps;
+
+        // Try to do a fast lookup in the page table
+        auto lookupBuffer{bufferTable[range.begin().base()]};
+        if (lookupBuffer != nullptr && lookupBuffer->guest->contains(range)) {
+            overlaps.emplace_back(lookupBuffer->shared_from_this(), tag);
+            return overlaps;
+        }
+
+        // If we cannot find the buffer quickly, do a binary search to find all overlapping buffers
+        auto entryIt{std::lower_bound(bufferMappings.begin(), bufferMappings.end(), range.end().base(), BufferLessThan)};
+        while (entryIt != bufferMappings.begin() && (*--entryIt)->guest->begin() <= range.end())
+            if ((*entryIt)->guest->end() > range.begin())
+                overlaps.emplace_back(*entryIt, tag);
+
+        return overlaps;
+    }
+
+    void BufferManager::InsertBuffer(std::shared_ptr<Buffer> buffer) {
+        auto bufferStart{buffer->guest->begin().base()}, bufferEnd{buffer->guest->end().base()};
+        bufferTable.Set(bufferStart, bufferEnd, buffer.get());
+        bufferMappings.insert(std::lower_bound(bufferMappings.begin(), bufferMappings.end(), bufferEnd, BufferLessThan), std::move(buffer));
+    }
+
+    void BufferManager::DeleteBuffer(const std::shared_ptr<Buffer> &buffer) {
+        bufferTable.Set(buffer->guest->begin().base(), buffer->guest->end().base(), nullptr);
+        bufferMappings.erase(std::find(bufferMappings.begin(), bufferMappings.end(), buffer));
+    }
+
+    BufferManager::LockedBuffer BufferManager::CoalesceBuffers(span<u8> range, const LockedBuffers &srcBuffers, ContextTag tag) {
+        if (!range.valid())
+            range = span<u8>{srcBuffers.front().buffer->guest->begin(), srcBuffers.back().buffer->guest->end()};
+
+        auto lowestAddress{range.begin().base()}, highestAddress{range.end().base()};
+        for (const auto &srcBuffer : srcBuffers) {
+            // Find the extents of the new buffer we want to create that can hold all overlapping buffers
+            auto mapping{*srcBuffer->guest};
+            if (mapping.begin().base() < lowestAddress)
+                lowestAddress = mapping.begin().base();
+            if (mapping.end().base() > highestAddress)
+                highestAddress = mapping.end().base();
+        }
+
+        LockedBuffer newBuffer{std::make_shared<Buffer>(gpu, span<u8>{lowestAddress, highestAddress}), tag}; // If we don't lock the buffer prior to trapping it during synchronization, a race could occur with a guest trap acquiring the lock before we do and mutating the buffer prior to it being ready
+
+        newBuffer->SetupGuestMappings();
+        newBuffer->SynchronizeHost(false); // Overlaps don't necessarily fully cover the buffer so we have to perform a sync here to prevent any gaps
+
+        auto copyBuffer{[](auto dstGuest, auto srcGuest, auto dstPtr, auto srcPtr) {
+            if (dstGuest.begin().base() <= srcGuest.begin().base()) {
+                size_t dstOffset{static_cast<size_t>(srcGuest.begin().base() - dstGuest.begin().base())};
+                size_t copySize{std::min(dstGuest.size() - dstOffset, srcGuest.size())};
+                std::memcpy(dstPtr + dstOffset, srcPtr, copySize);
+            } else if (dstGuest.begin().base() > srcGuest.begin().base()) {
+                size_t srcOffset{static_cast<size_t>(dstGuest.begin().base() - srcGuest.begin().base())};
+                size_t copySize{std::min(dstGuest.size(), srcGuest.size() - srcOffset)};
+                std::memcpy(dstPtr, srcPtr + srcOffset, copySize);
+            }
+        }}; //!< Copies between two buffers based off of their mappings in guest memory
+
+        for (auto &srcBuffer : srcBuffers) {
+            // All newly created buffers that have this set are guaranteed to be attached in buffer FindOrCreate, attach will then lock the buffer without resetting this flag, which will only finally be reset when the lock is released
+            if (newBuffer->backingImmutability == Buffer::BackingImmutability::None && srcBuffer->backingImmutability != Buffer::BackingImmutability::None)
+                newBuffer->backingImmutability = srcBuffer->backingImmutability;
+            else if (srcBuffer->backingImmutability == Buffer::BackingImmutability::AllWrites)
+                newBuffer->backingImmutability = Buffer::BackingImmutability::AllWrites;
+
+            newBuffer->everHadInlineUpdate |= srcBuffer->everHadInlineUpdate;
+
+            // LockedBuffer also holds `stateMutex` so we can freely access this
+            if (srcBuffer->cycle && newBuffer->cycle != srcBuffer->cycle) {
+                if (newBuffer->cycle)
+                    newBuffer->cycle->ChainCycle(srcBuffer->cycle);
+                else
+                    newBuffer->cycle = srcBuffer->cycle;
+            }
+
+            if (srcBuffer->dirtyState == Buffer::DirtyState::GpuDirty) {
+                srcBuffer->WaitOnFence();
+
+                if (srcBuffer.lock.IsFirstUsage() && newBuffer->dirtyState != Buffer::DirtyState::GpuDirty)
+                    copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->mirror.data(), srcBuffer->backing.data());
+                else
+                    newBuffer->MarkGpuDirty();
+
+                // Since we don't synchost source buffers and the source buffers here are GPU dirty their mirrors will be out of date, meaning the backing contents of this source buffer's region in the new buffer from the initial synchost call will be incorrect. By copying backings directly here we can ensure that no writes are lost and that if the newly created buffer needs to turn GPU dirty during recreation no copies need to be done since the backing is as up to date as the mirror at a minimum.
+                copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->backing.data(), srcBuffer->backing.data());
+            } else if (srcBuffer->AllCpuBackingWritesBlocked()) {
+                if (srcBuffer->dirtyState == Buffer::DirtyState::CpuDirty)
+                    Logger::Error("Buffer (0x{}-0x{}) is marked as CPU dirty while CPU backing writes are blocked, this is not valid", srcBuffer->guest->begin().base(), srcBuffer->guest->end().base());
+
+                // We need the backing to be stable so that any writes within this context are sequenced correctly, we can't use the source mirror here either since buffer writes within this context will update the mirror on CPU and backing on GPU
+                srcBuffer->WaitOnFence();
+                copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->backing.data(), srcBuffer->backing.data());
+            }
+
+            // Transfer all views from the overlapping buffer to the new buffer with the new buffer and updated offset, ensuring pointer stability
+            vk::DeviceSize overlapOffset{static_cast<vk::DeviceSize>(srcBuffer->guest->begin() - newBuffer->guest->begin())};
+            for (auto it{srcBuffer->views.begin()}; it != srcBuffer->views.end(); it++) {
+                if (overlapOffset)
+                    // This is a slight hack as we really shouldn't be changing the underlying non-mutable set elements without a rehash but without writing our own set impl this is the best we can do
+                    const_cast<Buffer::BufferViewStorage *>(&*it)->offset += overlapOffset;
+
+                // Reset the sequence number to the initial one, if the new buffer was created from any GPU dirty overlaps then the new buffer's sequence will be incremented past this thus forcing a reacquire if necessary
+                // This is fine to do in the set since the hash and operator== do not use this value
+                it->lastAcquiredSequence = Buffer::InitialSequenceNumber;
+            }
+
+            if (overlapOffset)
+                // All current hashes are invalidated by above loop if overlapOffset is nonzero so rehash the container
+                srcBuffer->views.rehash(0);
+
+            // Merge the view sets, this will keep pointer stability hence avoiding any reallocation
+            newBuffer->views.merge(srcBuffer->views);
+
+            // Transfer all delegates references from the overlapping buffer to the new buffer
+            for (auto &delegate : srcBuffer->delegates) {
+                delegate->buffer = *newBuffer;
+                if (delegate->usageCallback)
+                    delegate->usageCallback(*delegate->view, *newBuffer);
+            }
+
+            newBuffer->delegates.splice(newBuffer->delegates.end(), srcBuffer->delegates);
+        }
+
+        return newBuffer;
+    }
+
+    BufferView BufferManager::FindOrCreate(GuestBuffer guestMapping, ContextTag tag, const std::function<void(std::shared_ptr<Buffer>, ContextLock<Buffer> &&)> &attachBuffer) {
         /*
          * We align the buffer to the page boundary to ensure that:
          * 1) Any buffer view has the same alignment guarantees as on the guest, this is required for UBOs, SSBOs and Texel buffers
@@ -22,124 +172,41 @@ namespace skyline::gpu {
         vk::DeviceSize offset{static_cast<size_t>(guestMapping.begin().base() - alignedStart)}, size{guestMapping.size()};
         guestMapping = span<u8>{alignedStart, alignedEnd};
 
-        std::scoped_lock lock(mutex);
-
-        // Lookup for any buffers overlapping with the supplied guest mapping
-        boost::container::small_vector<std::shared_ptr<Buffer>, 4> overlaps;
-        for (auto entryIt{std::lower_bound(buffers.begin(), buffers.end(), guestMapping.end().base(), BufferLessThan)}; entryIt != buffers.begin() && (*--entryIt)->guest->begin() <= guestMapping.end();)
-            if ((*entryIt)->guest->end() > guestMapping.begin())
-                overlaps.push_back(*entryIt);
-
+        auto overlaps{Lookup(guestMapping, tag)};
         if (overlaps.size() == 1) [[likely]] {
-            auto buffer{overlaps.front()};
-            if (buffer->guest->begin() <= guestMapping.begin() && buffer->guest->end() >= guestMapping.end()) {
-                // If we find a buffer which can entirely fit the guest mapping, we can just return a view into it
-                std::scoped_lock bufferLock{*buffer};
-                return buffer->GetView(static_cast<vk::DeviceSize>(guestMapping.begin() - buffer->guest->begin()) + offset, size);
-            }
+            // If we find a buffer which can entirely fit the guest mapping, we can just return a view into it
+            auto &firstOverlap{overlaps.front()};
+            if (firstOverlap->guest->begin() <= guestMapping.begin() && firstOverlap->guest->end() >= guestMapping.end())
+                return firstOverlap->GetView(static_cast<vk::DeviceSize>(guestMapping.begin() - firstOverlap->guest->begin()) + offset, size);
         }
 
-        // Find the extents of the new buffer we want to create that can hold all overlapping buffers
-        auto lowestAddress{guestMapping.begin().base()}, highestAddress{guestMapping.end().base()};
-        for (const auto &overlap : overlaps) {
-            auto mapping{*overlap->guest};
-            if (mapping.begin().base() < lowestAddress)
-                lowestAddress = mapping.begin().base();
-            if (mapping.end().base() > highestAddress)
-                highestAddress = mapping.end().base();
-        }
+        if (overlaps.empty()) {
+            // If we couldn't find any overlapping buffers, create a new buffer without coalescing
+            LockedBuffer buffer{std::make_shared<Buffer>(gpu, guestMapping), tag};
+            buffer->SetupGuestMappings();
+            buffer->SynchronizeHost();
+            InsertBuffer(*buffer);
+            return buffer->GetView(offset, size);
+        } else {
+            // If the new buffer overlaps other buffers, we need to create a new buffer and coalesce all overlapping buffers into one
+            auto buffer{CoalesceBuffers(guestMapping, overlaps, tag)};
 
-        auto newBuffer{std::make_shared<Buffer>(gpu, cycle, span<u8>(lowestAddress, highestAddress), overlaps)};
-        for (auto &overlap : overlaps) {
-            std::scoped_lock overlapLock{*overlap};
-
-            buffers.erase(std::find(buffers.begin(), buffers.end(), overlap));
-
-            // Transfer all views from the overlapping buffer to the new buffer with the new buffer and updated offset, ensuring pointer stability
-            vk::DeviceSize overlapOffset{static_cast<vk::DeviceSize>(overlap->guest->begin() - newBuffer->guest->begin())};
-            for (auto it{overlap->views.begin()}; it != overlap->views.end(); it++) {
-                if (overlapOffset)
-                    // This is a slight hack as we really shouldn't be changing the underlying non-mutable set elements without a rehash but without writing our own set impl this is the best we can do
-                    const_cast<Buffer::BufferViewStorage *>(&*it)->offset += overlapOffset;
-
-                // Reset the sequence number to the initial one, if the new buffer was created from any GPU dirty overlaps then the new buffer's sequence will be incremented past this thus forcing a reacquire if neccessary
-                // This is fine to do in the set since the hash and operator== do not use this value
-                it->lastAcquiredSequence = Buffer::InitialSequenceNumber;
-            }
-
-            if (overlapOffset)
-                // All current hashes are invalidated by above loop if overlapOffset is nonzero so rehash the container
-                overlap->views.rehash(0);
-
-            // Merge the view sets, this will keep pointer stability hence avoiding any reallocation
-            newBuffer->views.merge(overlap->views);
-
-            // Transfer all delegates references from the overlapping buffer to the new buffer
-            for (auto &delegate : overlap->delegates) {
-                atomic_exchange(&delegate->buffer, newBuffer);
-                if (delegate->usageCallback)
-                    delegate->usageCallback(*delegate->view, newBuffer);
-            }
-
-            newBuffer->delegates.splice(newBuffer->delegates.end(), overlap->delegates);
-        }
-
-        buffers.insert(std::lower_bound(buffers.begin(), buffers.end(), newBuffer->guest->end().base(), BufferLessThan), newBuffer);
-
-        return newBuffer->GetView(static_cast<vk::DeviceSize>(guestMapping.begin() - newBuffer->guest->begin()) + offset, size);
-    }
-
-    BufferManager::MegaBufferSlot::MegaBufferSlot(GPU &gpu) : backing(gpu.memory.AllocateBuffer(Size)) {}
-
-    MegaBuffer::MegaBuffer(BufferManager::MegaBufferSlot &slot) : slot{slot}, freeRegion{slot.backing.subspan(PAGE_SIZE)} {}
-
-    MegaBuffer::~MegaBuffer() {
-        slot.active.clear(std::memory_order_release);
-    }
-
-    void MegaBuffer::Reset() {
-        freeRegion = slot.backing.subspan(PAGE_SIZE);
-    }
-
-    vk::Buffer MegaBuffer::GetBacking() const {
-        return slot.backing.vkBuffer;
-    }
-
-    vk::DeviceSize MegaBuffer::Push(span<u8> data, bool pageAlign) {
-        if (data.size() > freeRegion.size())
-            throw exception("Ran out of megabuffer space! Alloc size: 0x{:X}", data.size());
-
-        if (pageAlign) {
-            // If page aligned data was requested then align the free
-            auto alignedFreeBase{util::AlignUp(static_cast<size_t>(freeRegion.data() - slot.backing.data()), PAGE_SIZE)};
-            freeRegion = slot.backing.subspan(alignedFreeBase);
-        }
-
-        // Allocate space for data from the free region
-        auto resultSpan{freeRegion.subspan(0, data.size())};
-        resultSpan.copy_from(data);
-
-        // Move the free region along
-        freeRegion = freeRegion.subspan(data.size());
-        return static_cast<vk::DeviceSize>(resultSpan.data() - slot.backing.data());
-    }
-
-    MegaBuffer BufferManager::AcquireMegaBuffer(const std::shared_ptr<FenceCycle> &cycle) {
-        std::lock_guard lock{mutex};
-
-        for (auto &slot : megaBuffers) {
-            if (!slot.active.test_and_set(std::memory_order_acq_rel)) {
-                if (slot.cycle->Poll()) {
-                    slot.cycle = cycle;
-                    return {slot};
-                } else {
-                    slot.active.clear(std::memory_order_release);
+            // If any overlapping buffer was already attached to the current context, we should also attach the new buffer
+            for (auto &srcBuffer : overlaps) {
+                if (!srcBuffer.lock.IsFirstUsage()) {
+                    attachBuffer(*buffer, std::move(buffer.lock));
+                    break;
                 }
             }
-        }
 
-        auto& megaBuffer{megaBuffers.emplace_back(gpu)};
-        megaBuffer.cycle = cycle;
-        return {megaBuffer};
+            // Delete older overlapping buffers and insert the new buffer into the map
+            for (auto &overlap : overlaps) {
+                DeleteBuffer(*overlap);
+                overlap->Invalidate(); // Invalidate the overlapping buffer so it can't be synced in the future
+            }
+            InsertBuffer(*buffer);
+
+            return buffer->GetView(static_cast<vk::DeviceSize>(guestMapping.begin() - buffer->guest->begin()) + offset, size);
+        }
     }
 }

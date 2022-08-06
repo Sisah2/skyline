@@ -404,9 +404,11 @@ namespace skyline::nce {
         }
     }
 
-    NCE::CallbackEntry::CallbackEntry(TrapProtection protection, NCE::TrapCallback readCallback, NCE::TrapCallback writeCallback) : protection(protection), readCallback(std::move(readCallback)), writeCallback(std::move(writeCallback)) {}
+    NCE::CallbackEntry::CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, writeCallback{std::move(writeCallback)} {}
 
     void NCE::ReprotectIntervals(const std::vector<TrapMap::Interval> &intervals, TrapProtection protection) {
+        TRACE_EVENT("host", "NCE::ReprotectIntervals");
+
         auto reprotectIntervalsWithFunction = [&intervals](auto getProtection) {
             for (auto region : intervals) {
                 region = region.Align(PAGE_SIZE);
@@ -451,88 +453,113 @@ namespace skyline::nce {
             reprotectIntervalsWithFunction([&](auto region) {
                 return PROT_NONE; // No checks are needed as this is already the highest level of protection
             });
-
-            // Page out regions that are no longer accessible, these should be paged back in by a callback
-            for (auto region : intervals) {
-                auto freeStart{util::AlignUp(region.start, PAGE_SIZE)}, freeEnd{util::AlignDown(region.end, PAGE_SIZE)}; // We want to avoid the first and last page as they may contain data that won't be paged back in by the callback
-                ssize_t freeSize{freeEnd - freeStart};
-
-                constexpr ssize_t MinimumPageoutSize{PAGE_SIZE}; //!< The minimum size to page out, we don't want to page out small intervals for performance reasons
-                if (freeSize > MinimumPageoutSize)
-                    state.process->memory.FreeMemory(span<u8>{freeStart, static_cast<size_t>(freeSize)});
-            }
         }
     }
 
     bool NCE::TrapHandler(u8 *address, bool write) {
-        std::scoped_lock lock(trapMutex);
+        TRACE_EVENT("host", "NCE::TrapHandler");
 
-        // Check if we have a callback for this address
-        auto[entries, intervals]{trapMap.GetAlignedRecursiveRange<PAGE_SIZE>(address)};
-
-        if (entries.empty())
-            return false;
-
-        // Do callbacks for every entry in the intervals
-        if (write) {
-            for (auto entryRef : entries) {
-                auto &entry{entryRef.get()};
-                if (entry.protection == TrapProtection::None)
-                    // We don't need to do the callback if the entry doesn't require any protection already
-                    continue;
-
-                entry.writeCallback();
-                entry.protection = TrapProtection::None; // We don't need to protect this entry anymore
+        LockCallback lockCallback{};
+        while (true) {
+            if (lockCallback) {
+                // We want to avoid a deadlock of holding trapMutex while locking the resource inside a callback while another thread holding the resource's mutex waits on trapMutex, we solve this by quitting the loop if a callback would be blocking and attempt to lock the resource externally
+                lockCallback();
+                lockCallback = {};
             }
-        } else {
-            bool allNone{true}; // If all entries require no protection, we can protect to allow all accesses
-            for (auto entryRef : entries) {
-                auto &entry{entryRef.get()};
-                if (entry.protection < TrapProtection::ReadWrite) {
-                    // We don't need to do the callback if the entry can already handle read accesses
-                    allNone = allNone && entry.protection == TrapProtection::None;
-                    continue;
+
+            std::scoped_lock lock(trapMutex);
+
+            // Retrieve any callbacks for the page that was faulted
+            auto[entries, intervals]{trapMap.GetAlignedRecursiveRange<PAGE_SIZE>(address)};
+            if (entries.empty())
+                return false; // There's no callbacks associated with this page
+
+            // Do callbacks for every entry in the intervals
+            if (write) {
+                for (auto entryRef : entries) {
+                    auto &entry{entryRef.get()};
+                    if (entry.protection == TrapProtection::None)
+                        // We don't need to do the callback if the entry doesn't require any protection already
+                        continue;
+
+                    if (!entry.writeCallback()) {
+                        lockCallback = entry.lockCallback;
+                        break;
+                    }
+                    entry.protection = TrapProtection::None; // We don't need to protect this entry anymore
                 }
+                if (lockCallback)
+                    continue; // We need to retry the loop because a callback was blocking
+            } else {
+                bool allNone{true}; // If all entries require no protection, we can protect to allow all accesses
+                for (auto entryRef : entries) {
+                    auto &entry{entryRef.get()};
+                    if (entry.protection < TrapProtection::ReadWrite) {
+                        // We don't need to do the callback if the entry can already handle read accesses
+                        allNone = allNone && entry.protection == TrapProtection::None;
+                        continue;
+                    }
 
-                entry.readCallback();
-                entry.protection = TrapProtection::WriteOnly; // We only need to trap writes to this entry
+                    if (!entry.readCallback()) {
+                        lockCallback = entry.lockCallback;
+                        break;
+                    }
+                    entry.protection = TrapProtection::WriteOnly; // We only need to trap writes to this entry
+                }
+                if (lockCallback)
+                    continue; // We need to retry the loop because a callback was blocking
+                write = allNone;
             }
-            write = allNone;
+
+            int permission{PROT_READ | (write ? PROT_WRITE : 0) | PROT_EXEC};
+            for (const auto &interval : intervals)
+                // Reprotect the interval to the lowest protection level that the callbacks performed allow
+                mprotect(interval.start, interval.Size(), permission);
+
+            return true;
         }
-
-        int permission{PROT_READ | (write ? PROT_WRITE : 0) | PROT_EXEC};
-        for (const auto &interval : intervals)
-            // Reprotect the interval to the lowest protection level that the callbacks performed allow
-            mprotect(interval.start, interval.Size(), permission);
-
-        return true;
     }
 
     constexpr NCE::TrapHandle::TrapHandle(const TrapMap::GroupHandle &handle) : TrapMap::GroupHandle(handle) {}
 
-    NCE::TrapHandle NCE::TrapRegions(span<span<u8>> regions, bool writeOnly, const TrapCallback &readCallback, const TrapCallback &writeCallback) {
-        std::scoped_lock lock(trapMutex);
-        auto protection{writeOnly ? TrapProtection::WriteOnly : TrapProtection::ReadWrite};
-        TrapHandle handle{trapMap.Insert(regions, CallbackEntry{protection, readCallback, writeCallback})};
-        ReprotectIntervals(handle->intervals, protection);
+    NCE::TrapHandle NCE::CreateTrap(span<span<u8>> regions, const LockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback) {
+        TRACE_EVENT("host", "NCE::CreateTrap");
+        std::scoped_lock lock{trapMutex};
+        TrapHandle handle{trapMap.Insert(regions, CallbackEntry{TrapProtection::None, lockCallback, readCallback, writeCallback})};
         return handle;
     }
 
-    void NCE::RetrapRegions(TrapHandle handle, bool writeOnly) {
-        std::scoped_lock lock(trapMutex);
+    void NCE::TrapRegions(TrapHandle handle, bool writeOnly) {
+        TRACE_EVENT("host", "NCE::TrapRegions");
+        std::scoped_lock lock{trapMutex};
         auto protection{writeOnly ? TrapProtection::WriteOnly : TrapProtection::ReadWrite};
         handle->value.protection = protection;
         ReprotectIntervals(handle->intervals, protection);
     }
 
+    void NCE::PageOutRegions(TrapHandle handle) {
+        TRACE_EVENT("host", "NCE::PageOutRegions");
+        std::scoped_lock lock{trapMutex};
+        for (auto region : handle->intervals) {
+            auto freeStart{util::AlignUp(region.start, PAGE_SIZE)}, freeEnd{util::AlignDown(region.end, PAGE_SIZE)}; // We want to avoid the first and last page as they may contain unrelated data
+            ssize_t freeSize{freeEnd - freeStart};
+
+            constexpr ssize_t MinimumPageoutSize{PAGE_SIZE}; //!< The minimum size to page out, we don't want to page out small intervals for performance reasons
+            if (freeSize > MinimumPageoutSize)
+                state.process->memory.FreeMemory(span<u8>{freeStart, static_cast<size_t>(freeSize)});
+        }
+    }
+
     void NCE::RemoveTrap(TrapHandle handle) {
-        std::scoped_lock lock(trapMutex);
+        TRACE_EVENT("host", "NCE::RemoveTrap");
+        std::scoped_lock lock{trapMutex};
         handle->value.protection = TrapProtection::None;
         ReprotectIntervals(handle->intervals, TrapProtection::None);
     }
 
     void NCE::DeleteTrap(TrapHandle handle) {
-        std::scoped_lock lock(trapMutex);
+        TRACE_EVENT("host", "NCE::DeleteTrap");
+        std::scoped_lock lock{trapMutex};
         handle->value.protection = TrapProtection::None;
         ReprotectIntervals(handle->intervals, TrapProtection::None);
         trapMap.Remove(handle);

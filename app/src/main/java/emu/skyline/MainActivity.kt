@@ -7,7 +7,6 @@ package emu.skyline
 
 import android.content.Intent
 import android.graphics.Color
-import android.graphics.Rect
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
@@ -35,11 +34,10 @@ import emu.skyline.databinding.MainActivityBinding
 import emu.skyline.loader.AppEntry
 import emu.skyline.loader.LoaderResult
 import emu.skyline.loader.RomFormat
-import emu.skyline.utils.PreferenceSettings
 import emu.skyline.provider.DocumentsProvider
+import emu.skyline.utils.PreferenceSettings
 import javax.inject.Inject
 import kotlin.math.ceil
-
 
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
@@ -154,39 +152,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private inner class GridSpacingItemDecoration : RecyclerView.ItemDecoration() {
-        private val padding = resources.getDimensionPixelSize(R.dimen.grid_padding)
-
-        override fun getItemOffsets(outRect : Rect, view : View, parent : RecyclerView, state : RecyclerView.State) {
-            super.getItemOffsets(outRect, view, parent, state)
-
-            val gridLayoutManager = parent.layoutManager as GridLayoutManager
-            val layoutParams = view.layoutParams as GridLayoutManager.LayoutParams
-            when (layoutParams.spanIndex) {
-                0 -> outRect.left = padding
-
-                gridLayoutManager.spanCount - 1 -> outRect.right = padding
-
-                else -> {
-                    outRect.left = padding / 2
-                    outRect.right = padding / 2
-                }
-            }
-
-            if (layoutParams.spanSize == gridLayoutManager.spanCount) {
-                outRect.left = 0
-                outRect.right = 0
-            }
-        }
-    }
-
     private fun setAppListDecoration() {
         binding.appList.apply {
             while (itemDecorationCount > 0) removeItemDecorationAt(0)
             when (layoutType) {
                 LayoutType.List -> Unit
 
-                LayoutType.Grid, LayoutType.GridCompact -> addItemDecoration(GridSpacingItemDecoration())
+                LayoutType.Grid, LayoutType.GridCompact -> addItemDecoration(GridSpacingItemDecoration(resources.getDimensionPixelSize(R.dimen.grid_padding)))
             }
         }
     }

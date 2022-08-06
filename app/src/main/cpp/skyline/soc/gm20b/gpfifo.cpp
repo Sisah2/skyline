@@ -150,6 +150,10 @@ namespace skyline::soc::gm20b {
     }
 
     void ChannelGpfifo::Process(GpEntry gpEntry) {
+        // Submit if required by the GpEntry, this is needed as some games dynamically generate pushbuffer contents
+        if (gpEntry.sync == GpEntry::Sync::Wait)
+            channelCtx.executor.Submit();
+
         if (!gpEntry.size) {
             // This is a GPFIFO control entry, all control entries have a zero length and contain no pushbuffers
             switch (gpEntry.opcode) {
@@ -335,12 +339,12 @@ namespace skyline::soc::gm20b {
             if (hitEnd)
                 break;
         }
-
-        channelCtx.maxwell3D->FlushEngineState();
     }
 
     void ChannelGpfifo::Run() {
-        pthread_setname_np(pthread_self(), "GPFIFO");
+        if (int result{pthread_setname_np(pthread_self(), "GPFIFO")})
+            Logger::Warn("Failed to set the thread name: {}", strerror(result));
+
         try {
             signal::SetSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE}, signal::ExceptionalSignalHandler);
             signal::SetSignalHandler({SIGSEGV}, nce::NCE::HostSignalHandler); // We may access NCE trapped memory
@@ -348,6 +352,10 @@ namespace skyline::soc::gm20b {
             gpEntries.Process([this](GpEntry gpEntry) {
                 Logger::Debug("Processing pushbuffer: 0x{:X}, Size: 0x{:X}", gpEntry.Address(), +gpEntry.size);
                 Process(gpEntry);
+            }, [this]() {
+                // If we run out of GpEntries to process ensure we submit any remaining GPU work before waiting for more to arrive
+                Logger::Debug("Finished processing pushbuffer batch");
+                channelCtx.executor.Submit();
             });
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {

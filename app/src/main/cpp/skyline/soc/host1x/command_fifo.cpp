@@ -114,8 +114,8 @@ namespace skyline::soc::host1x {
     }
 
     void ChannelCommandFifo::Run() {
-        pthread_setname_np(pthread_self(), "ChannelCommandFifo");
-        Logger::UpdateTag();
+        if (int result{pthread_setname_np(pthread_self(), "ChannelCmdFifo")})
+            Logger::Warn("Failed to set the thread name: {}", strerror(result));
 
         try {
             signal::SetSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE}, signal::ExceptionalSignalHandler);
@@ -124,7 +124,7 @@ namespace skyline::soc::host1x {
             gatherQueue.Process([this](span<u32> gather) {
                 Logger::Debug("Processing pushbuffer: 0x{:X}, size: 0x{:X}", gather.data(), gather.size());
                 Process(gather);
-            });
+            }, [] {});
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 Logger::Error("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));

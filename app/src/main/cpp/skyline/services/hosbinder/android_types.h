@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 // Copyright © 2005 The Android Open Source Project
-// Copyright © 2019-2020 Ryujinx Team and Contributors
+// Copyright © 2019-2020 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #pragma once
 
@@ -82,7 +82,7 @@ namespace skyline::service::hosbinder {
         /**
          * @return If the rectangle had any defined bounds
          */
-        constexpr operator bool() {
+        constexpr operator bool() const {
             return left || top || right || bottom;
         }
 

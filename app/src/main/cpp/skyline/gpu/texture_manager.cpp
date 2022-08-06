@@ -6,7 +6,19 @@
 namespace skyline::gpu {
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
-    std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture) {
+    void TextureManager::lock() {
+        mutex.lock();
+    }
+
+    void TextureManager::unlock() {
+        mutex.unlock();
+    }
+
+    bool TextureManager::try_lock() {
+        return mutex.try_lock();
+    }
+
+    std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         auto guestMapping{guestTexture.mappings.front()};
 
         /*
@@ -23,7 +35,6 @@ namespace skyline::gpu {
          * 5) Create a new texture and insert it in the map then return it
          */
 
-        std::scoped_lock lock(mutex);
         std::shared_ptr<Texture> match{};
         auto mappingEnd{std::upper_bound(textures.begin(), textures.end(), guestMapping)}, hostMapping{mappingEnd};
         while (hostMapping != textures.begin() && (--hostMapping)->end() > guestMapping.begin()) {
@@ -52,6 +63,7 @@ namespace skyline::gpu {
                       || matchGuestTexture.viewMipBase > 0)
                      && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
                     auto &texture{hostMapping->texture};
+                    ContextLock textureLock{tag, *texture};
                     return texture->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
                         .aspectMask = guestTexture.aspect,
                         .baseMipLevel = guestTexture.viewMipBase,
@@ -75,6 +87,7 @@ namespace skyline::gpu {
 
         // Create a texture as we cannot find one that matches
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
+        texture->SetupGuestMappings();
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto it{texture->guest->mappings.begin()};
         textures.emplace(mappingEnd, TextureMapping{texture, it, guestMapping});

@@ -122,7 +122,7 @@ namespace skyline::kernel::type {
 
         bool isHighestPriority;
         {
-            std::scoped_lock lock{owner->waiterMutex};
+            std::scoped_lock lock{owner->waiterMutex, state.thread->waiterMutex}; // We need to lock both mutexes at the same time as we mutate the owner and the current thread, the ordering of locks **must** match MutexUnlock to avoid deadlocks
 
             u32 value{};
             if (__atomic_compare_exchange_n(mutex, &value, tag, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
@@ -177,11 +177,10 @@ namespace skyline::kernel::type {
             if (!waiters.empty()) {
                 // If there are threads still waiting on us then try to inherit their priority
                 auto highestPriorityThread{waiters.front()};
-                i8 newPriority, basePriority;
+                i8 newPriority, currentPriority{state.thread->priority.load()};
                 do {
-                    basePriority = state.thread->basePriority.load();
-                    newPriority = std::min(basePriority, highestPriorityThread->priority.load());
-                } while (basePriority != newPriority && state.thread->priority.compare_exchange_strong(basePriority, newPriority));
+                    newPriority = std::min(currentPriority, highestPriorityThread->priority.load());
+                } while (currentPriority != newPriority && !state.thread->priority.compare_exchange_strong(currentPriority, newPriority));
                 state.scheduler->UpdatePriority(state.thread);
             } else {
                 i8 priority, basePriority;
@@ -199,7 +198,7 @@ namespace skyline::kernel::type {
                 do {
                     ownerPriority = nextOwner->priority.load();
                     priority = std::min(ownerPriority, nextWaiter->priority.load());
-                } while (ownerPriority != priority && nextOwner->priority.compare_exchange_strong(ownerPriority, priority));
+                } while (ownerPriority != priority && !nextOwner->priority.compare_exchange_strong(ownerPriority, priority));
 
                 __atomic_store_n(mutex, nextOwner->waitTag | HandleWaitersBit, __ATOMIC_SEQ_CST);
             } else {

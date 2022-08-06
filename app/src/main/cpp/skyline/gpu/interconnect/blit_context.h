@@ -118,15 +118,12 @@ namespace skyline::gpu::interconnect {
             auto srcGuestTexture{GetGuestTexture(srcSurface)};
             auto dstGuestTexture{GetGuestTexture(dstSurface)};
 
-            auto srcTextureView{gpu.texture.FindOrCreate(srcGuestTexture)};
-            auto dstTextureView{gpu.texture.FindOrCreate(dstGuestTexture)};
+            auto &textureManager{executor.AcquireTextureManager()};
+            auto srcTextureView{textureManager.FindOrCreate(srcGuestTexture, executor.tag)};
+            executor.AttachTexture(srcTextureView.get());
 
-            {
-                std::scoped_lock lock{*srcTextureView, *dstTextureView};
-
-                executor.AttachTexture(&*srcTextureView);
-                executor.AttachTexture(&*dstTextureView);
-            }
+            auto dstTextureView{textureManager.FindOrCreate(dstGuestTexture, executor.tag)};
+            executor.AttachTexture(dstTextureView.get());
 
             auto getSubresourceLayers{[](const vk::ImageSubresourceRange &range, vk::ImageAspectFlags aspect) {
                 return vk::ImageSubresourceLayers{
@@ -145,7 +142,6 @@ namespace skyline::gpu::interconnect {
             };
 
             executor.AddOutsideRpCommand([region, srcTextureView, dstTextureView, linearFilter](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &cycle, GPU &) {
-                std::scoped_lock lock{*srcTextureView, *dstTextureView};
                 auto blitSrcImage{srcTextureView->texture->GetBacking()};
                 auto blitDstImage{dstTextureView->texture->GetBacking()};
 
