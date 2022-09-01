@@ -233,7 +233,9 @@ namespace skyline::gpu {
             vk::PhysicalDeviceShaderDrawParametersFeatures,
             vk::PhysicalDeviceProvokingVertexFeaturesEXT,
             vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT,
-            vk::PhysicalDeviceImagelessFramebufferFeatures>()};
+            vk::PhysicalDeviceImagelessFramebufferFeatures,
+            vk::PhysicalDeviceTransformFeedbackFeaturesEXT,
+            vk::PhysicalDeviceIndexTypeUint8FeaturesEXT>()};
         decltype(deviceFeatures2) enabledFeatures2{}; // We only want to enable features we required due to potential overhead from unused features
 
         #define FEAT_REQ(structName, feature)                                            \
@@ -268,6 +270,7 @@ namespace skyline::gpu {
             vk::PhysicalDeviceProperties2,
             vk::PhysicalDeviceDriverProperties,
             vk::PhysicalDeviceFloatControlsProperties,
+            vk::PhysicalDeviceTransformFeedbackPropertiesEXT,
             vk::PhysicalDeviceSubgroupProperties>()};
 
         traits = TraitManager{deviceFeatures2, enabledFeatures2, deviceExtensions, enabledExtensions, deviceProperties2, physicalDevice};
@@ -375,6 +378,7 @@ namespace skyline::gpu {
           megaBufferAllocator(*this),
           descriptor(*this),
           shader(state, *this),
+          helperShaders(*this, state.os->assetFileSystem),
           graphicsPipelineCache(*this),
           renderPassCache(*this),
           framebufferCache(*this) {}

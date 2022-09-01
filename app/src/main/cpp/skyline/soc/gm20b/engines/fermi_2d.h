@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include <gpu/interconnect/blit_context.h>
+#include <gpu/interconnect/fermi_2d.h>
 #include "engine.h"
 
 namespace skyline::soc::gm20b {
@@ -18,7 +18,7 @@ namespace skyline::soc::gm20b::engine::fermi2d {
     class Fermi2D : public MacroEngineBase {
       private:
         host1x::SyncpointSet &syncpoints;
-        gpu::interconnect::BlitContext context;
+        gpu::interconnect::Fermi2D interconnect;
         ChannelContext &channelCtx;
 
         /**
@@ -46,16 +46,6 @@ namespace skyline::soc::gm20b::engine::fermi2d {
                     Shape16x4 = 2
                 };
 
-                enum class SampleModeOrigin : u8 {
-                    Center = 0,
-                    Corner = 1
-                };
-
-                enum class SampleModeFilter : u8 {
-                    Point = 0,
-                    Bilinear = 1
-                };
-
                 BlockShapeV blockShape : 3;
                 u32 _pad0_ : 29;
                 u16 corralSize : 10;
@@ -63,23 +53,23 @@ namespace skyline::soc::gm20b::engine::fermi2d {
                 bool safeOverlap : 1;
                 u32 _pad2_ : 31;
                 struct {
-                    SampleModeOrigin origin : 1;
+                    type::SampleModeOrigin origin : 1;
                     u8 _pad0_ : 3;
-                    SampleModeFilter filter : 1;
+                    type::SampleModeFilter filter : 1;
                     u32 _pad1_ : 27;
                 } sampleMode;
 
                 u32 _pad3_[8];
 
-                i32 dstX0;
-                i32 dstY0;
-                i32 dstWidth;
-                i32 dstHeight;
+                u32 dstX0;
+                u32 dstY0;
+                u32 dstWidth;
+                u32 dstHeight;
                 i64 duDx;
                 i64 dvDy;
-                i64 srcX0;
+                i64 srcX;
                 union {
-                    i64 srcY0;
+                    i64 srcY;
                     struct {
                         u32 _pad4_;
                         u32 trigger;

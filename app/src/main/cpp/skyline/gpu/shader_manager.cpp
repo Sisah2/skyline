@@ -64,6 +64,7 @@ namespace skyline::gpu {
             .warp_size_potentially_larger_than_guest = TegraX1WarpSize < traits.subgroupSize,
             .lower_left_origin_mode = false,
             .need_declared_frag_colors = false,
+            .has_broken_spirv_position_input = traits.quirks.brokenSpirvPositionInput
         };
 
         Shader::Settings::values = {
@@ -367,6 +368,11 @@ namespace skyline::gpu {
         lock.unlock();
 
         // Note: EmitSPIRV will change bindings so we explicitly have pre/post emit bindings
+        if (program->program.info.loads.Legacy() || program->program.info.stores.Legacy()) {
+            // The legacy conversion pass modifies the underlying program based on runtime state, so without making a copy of the program there may be issues if runtimeInfo changes
+            Logger::Warn("Shader uses legacy attributes, beware!");
+            Shader::Maxwell::ConvertLegacyToGeneric(program->program, runtimeInfo);
+        }
         auto spirv{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program->program, bindings)};
 
         vk::ShaderModuleCreateInfo createInfo{

@@ -31,6 +31,10 @@ namespace skyline::input {
         bool activated{};
         TouchScreenSection &section;
 
+        std::recursive_mutex mutex;
+        TouchScreenState screenState{}; //!< The current state of the touch screen
+        std::array<uint8_t, 16> pointTimeout; //!< A frame timeout counter for each point which has ended (according to it's attribute), when it reaches 0 the point is removed from the screen
+
       public:
         /**
          * @param hid A pointer to HID Shared Memory on the host
@@ -40,5 +44,10 @@ namespace skyline::input {
         void Activate();
 
         void SetState(span<TouchScreenPoint> touchPoints);
+
+        /**
+         * @brief Writes the current state of the touch screen to HID shared memory
+         */
+        void UpdateSharedMemory();
     };
 }

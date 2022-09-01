@@ -5,6 +5,7 @@
 
 #include <boost/container/stable_vector.hpp>
 #include <unordered_set>
+#include <common/linear_allocator.h>
 #include <gpu/megabuffer.h>
 #include "command_nodes.h"
 
@@ -64,7 +65,7 @@ namespace skyline::gpu::interconnect {
         std::vector<LockedBuffer> attachedBuffers; //!< All textures that are attached to the current execution
 
         using SharedBufferDelegate = std::shared_ptr<Buffer::BufferDelegate>;
-        std::unordered_set<SharedBufferDelegate> attachedBufferDelegates; //!< All buffers that are attached to the current execution
+        std::vector<SharedBufferDelegate> attachedBufferDelegates; //!< All buffers that are attached to the current execution
 
         std::vector<TextureView *> lastSubpassAttachments; //!< The storage backing for attachments used in the last subpass
         span<TextureView *> lastSubpassInputAttachments; //!< The set of input attachments used in the last subpass
@@ -98,6 +99,7 @@ namespace skyline::gpu::interconnect {
 
       public:
         std::shared_ptr<FenceCycle> cycle; //!< The fence cycle that this command executor uses to wait for the GPU to finish executing commands
+        LinearAllocatorState<> allocator;
         ContextTag tag; //!< The tag associated with this command executor, any tagged resource locking must utilize this tag
 
         CommandExecutor(const DeviceState &state);

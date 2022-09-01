@@ -11,7 +11,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
         : MacroEngineBase(macroState),
           syncpoints(state.soc->host1x.syncpoints),
           context(*state.gpu, channelCtx, executor),
-          i2m(channelCtx.asCtx),
+          i2m(channelCtx),
           channelCtx(channelCtx) {
         executor.AddFlushCallback([this]() { FlushEngineState(); });
         InitializeRegisters();
@@ -230,6 +230,37 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
 
                 ENGINE_CASE(tessellationMode, {
                     context.SetTessellationMode(tessellationMode.primitive, tessellationMode.spacing, tessellationMode.winding);
+                })
+
+                #define TRANSFORM_FEEDBACK_CALLBACKS(z, index, data)                           \
+                ENGINE_ARRAY_STRUCT_CASE(transformFeedbackBuffers, index, enable, {            \
+                    context.SetTransformFeedbackBufferEnabled(index, enable);                  \
+                })                                                                             \
+                ENGINE_ARRAY_STRUCT_STRUCT_CASE(transformFeedbackBuffers, index, iova, high, { \
+                    context.SetTransformFeedbackBufferIovaHigh(index, high);                   \
+                })                                                                             \
+                ENGINE_ARRAY_STRUCT_STRUCT_CASE(transformFeedbackBuffers, index, iova, low, {  \
+                    context.SetTransformFeedbackBufferIovaLow(index, low);                     \
+                })                                                                             \
+                ENGINE_ARRAY_STRUCT_CASE(transformFeedbackBuffers, index, size, {              \
+                    context.SetTransformFeedbackBufferSize(index, size);                       \
+                })                                                                             \
+                ENGINE_ARRAY_STRUCT_CASE(transformFeedbackBuffers, index, offset, {            \
+                    context.SetTransformFeedbackBufferOffset(index, offset);                   \
+                })                                                                             \
+                ENGINE_ARRAY_STRUCT_CASE(transformFeedbackBufferStates, index, varyingCount, { \
+                    context.SetTransformFeedbackBufferVaryingCount(index, varyingCount);       \
+                })                                                                             \
+                ENGINE_ARRAY_STRUCT_CASE(transformFeedbackBufferStates, index, stride, {       \
+                    context.SetTransformFeedbackBufferStride(index, stride);                   \
+                })
+
+                BOOST_PP_REPEAT(4, TRANSFORM_FEEDBACK_CALLBACKS, 0)
+                static_assert(type::TransformFeedbackBufferCount == 4 && type::TransformFeedbackBufferCount < BOOST_PP_LIMIT_REPEAT);
+                #undef TRANSFORM_FEEDBACK_CALLBACKS
+
+                ENGINE_CASE(transformFeedbackEnable, {
+                    context.SetTransformFeedbackEnabled(transformFeedbackEnable);
                 })
 
                 ENGINE_STRUCT_CASE(depthBiasEnable, point, {
@@ -617,10 +648,20 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                 ENGINE_STRUCT_CASE(texturePool, maximumIndex, {
                     context.SetTexturePoolMaximumIndex(maximumIndex);
                 })
-
                 ENGINE_CASE(depthMode, {
                     context.SetDepthMode(depthMode);
                 })
+
+                #define TRANSFORM_FEEDBACK_VARYINGS_CALLBACK(z, index, data)                                               \
+                ENGINE_ARRAY_CASE(transformFeedbackVaryings, index, {                                                      \
+                    context.SetTransformFeedbackBufferVarying(index / (type::TransformFeedbackVaryingCount / sizeof(u32)), \
+                                                              index % (type::TransformFeedbackVaryingCount / sizeof(u32)), \
+                                                              transformFeedbackVaryings);                                  \
+                })
+
+                BOOST_PP_REPEAT(128, TRANSFORM_FEEDBACK_VARYINGS_CALLBACK, 0)
+                static_assert((type::TransformFeedbackVaryingCount / sizeof(u32)) * type::TransformFeedbackBufferCount < BOOST_PP_LIMIT_REPEAT);
+                #undef TRANSFORM_FEEDBACK_VARYINGS_CALLBACK
 
                 default:
                     break;

@@ -315,7 +315,7 @@ namespace skyline::gpu::cache {
 
     GraphicsPipelineCache::CompiledPipeline::CompiledPipeline(const PipelineCacheEntry &entry) : descriptorSetLayout(*entry.descriptorSetLayout), pipelineLayout(*entry.pipelineLayout), pipeline(*entry.pipeline) {}
 
-    GraphicsPipelineCache::CompiledPipeline GraphicsPipelineCache::GetCompiledPipeline(const PipelineState &state, span<vk::DescriptorSetLayoutBinding> layoutBindings) {
+    GraphicsPipelineCache::CompiledPipeline GraphicsPipelineCache::GetCompiledPipeline(const PipelineState &state, span<const vk::DescriptorSetLayoutBinding> layoutBindings, span<const vk::PushConstantRange> pushConstantRanges) {
         std::unique_lock lock(mutex);
 
         auto it{pipelineCache.find(state)};
@@ -325,7 +325,7 @@ namespace skyline::gpu::cache {
         lock.unlock();
 
         vk::raii::DescriptorSetLayout descriptorSetLayout{gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
-            .flags = gpu.traits.supportsPushDescriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR : vk::DescriptorSetLayoutCreateFlags{},
+            .flags = vk::DescriptorSetLayoutCreateFlags{},
             .pBindings = layoutBindings.data(),
             .bindingCount = static_cast<u32>(layoutBindings.size()),
         }};
@@ -333,6 +333,8 @@ namespace skyline::gpu::cache {
         vk::raii::PipelineLayout pipelineLayout{gpu.vkDevice, vk::PipelineLayoutCreateInfo{
             .pSetLayouts = &*descriptorSetLayout,
             .setLayoutCount = 1,
+            .pPushConstantRanges = pushConstantRanges.data(),
+            .pushConstantRangeCount = static_cast<u32>(pushConstantRanges.size()),
         }};
 
         boost::container::small_vector<vk::AttachmentDescription, 8> attachmentDescriptions;

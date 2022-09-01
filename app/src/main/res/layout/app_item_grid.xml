@@ -40,7 +40,19 @@
         tools:text="Title" />
 
     <TextView
-        android:id="@+id/text_subtitle"
+        android:id="@+id/text_version"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="10dp"
+        android:ellipsize="marquee"
+        android:marqueeRepeatLimit="marquee_forever"
+        android:singleLine="true"
+        android:textSize="12sp"
+        tools:text="Version" />
+
+    <TextView
+        android:id="@+id/text_author"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginStart="10dp"

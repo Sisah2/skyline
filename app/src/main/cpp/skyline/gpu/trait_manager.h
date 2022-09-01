@@ -35,9 +35,14 @@ namespace skyline::gpu {
         bool supportsAtomicInt64{}; //!< If atomic operations on 64-bit integers are supported in shaders
         bool supportsFloatControls{}; //!< If extensive control over FP behavior is exposed (with VK_KHR_shader_float_controls)
         vk::PhysicalDeviceFloatControlsProperties floatControls{}; //!< Specifics of FP behavior control (All members will be zero'd out when unavailable)
+        bool supportsTransformFeedback{}; //!< If the 'VK_EXT_transform_feedback' extension is supported with neccessary features for emulation
         bool supportsImageReadWithoutFormat{}; //!< If a storage image can be read without a format
         bool supportsTopologyListRestart{}; //!< If the device supports using primitive restart for topology lists (with VK_EXT_primitive_topology_list_restart)
         bool supportsTopologyPatchListRestart{}; //!< If the device supports using primitive restart for topology patch lists (with VK_EXT_primitive_topology_list_restart)
+        bool supportsGeometryShaders; //!< If the device supports the 'geometryShader' Vulkan feature
+        bool supportsVertexPipelineStoresAndAtomics{}; //!< If the device supports the 'vertexPipelineStoresAndAtomics' Vulkan feature
+        bool supportsFragmentStoresAndAtomics{}; //!< If the device supports the 'fragmentStoresAndAtomics' Vulkan feature
+        bool supportsShaderStorageImageWriteWithoutFormat{}; //!< If the device supports the 'shaderStorageImageWriteWithoutFormat' Vulkan feature
         bool supportsSubgroupVote{}; //!< If subgroup votes are supported in shaders with SPV_KHR_subgroup_vote
         u32 subgroupSize{}; //!< Size of a subgroup on the host GPU
 
@@ -54,6 +59,7 @@ namespace skyline::gpu {
             bool brokenDescriptorAliasing{}; //!< [Adreno Proprietary] A bug that causes alised descriptor sets to be incorrectly interpreted by the shader compiler leading to it buggering up LLVM function argument types and crashing
             bool relaxedRenderPassCompatibility{}; //!< [Adreno Proprietary/Freedreno] A relaxed version of Vulkan specification's render pass compatibility clause which allows for caching pipeline objects for multi-subpass renderpasses, this is intentionally disabled by default as it requires testing prior to enabling
             bool brokenPushDescriptors{}; //!< [Adreno Proprietary] A bug that causes push descriptor updates to ignored by the driver in certain situations
+            bool brokenSpirvPositionInput{}; //!< [Adreno Proprietary] A bug that causes the shader compiler to fail on shaders with vertex position inputs not contained within a struct
 
             u32 maxSubpassCount{std::numeric_limits<u32>::max()}; //!< The maximum amount of subpasses within a renderpass, this is limited to 64 on older Adreno proprietary drivers
             vk::QueueGlobalPriorityEXT maxGlobalPriority{vk::QueueGlobalPriorityEXT::eMedium}; //!< The highest allowed global priority of the queue, drivers will not allow higher priorities to be set on queues
@@ -74,6 +80,7 @@ namespace skyline::gpu {
             vk::PhysicalDeviceProperties2,
             vk::PhysicalDeviceDriverProperties,
             vk::PhysicalDeviceFloatControlsProperties,
+            vk::PhysicalDeviceTransformFeedbackPropertiesEXT,
             vk::PhysicalDeviceSubgroupProperties>;
 
         using DeviceFeatures2 = vk::StructureChain<
@@ -87,7 +94,9 @@ namespace skyline::gpu {
             vk::PhysicalDeviceShaderDrawParametersFeatures,
             vk::PhysicalDeviceProvokingVertexFeaturesEXT,
             vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT,
-            vk::PhysicalDeviceImagelessFramebufferFeatures>;
+            vk::PhysicalDeviceImagelessFramebufferFeatures,
+            vk::PhysicalDeviceTransformFeedbackFeaturesEXT,
+            vk::PhysicalDeviceIndexTypeUint8FeaturesEXT>;
 
         TraitManager(const DeviceFeatures2 &deviceFeatures2, DeviceFeatures2 &enabledFeatures2, const std::vector<vk::ExtensionProperties> &deviceExtensions, std::vector<std::array<char, VK_MAX_EXTENSION_NAME_SIZE>> &enabledExtensions, const DeviceProperties2 &deviceProperties2, const vk::raii::PhysicalDevice& physicalDevice);
 

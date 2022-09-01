@@ -80,6 +80,8 @@ class OnScreenEditActivity : AppCompatActivity() {
             Pair(R.drawable.ic_edit, editAction),
             Pair(R.drawable.ic_zoom_out, { binding.onScreenControllerView.decreaseScale() }),
             Pair(R.drawable.ic_zoom_in, { binding.onScreenControllerView.increaseScale() }),
+            Pair(R.drawable.ic_opacity_minus) { binding.onScreenControllerView.decreaseOpacity() },
+            Pair(R.drawable.ic_opacity_plus) { binding.onScreenControllerView.increaseOpacity() },
             Pair(R.drawable.ic_close, closeAction)
     )
 

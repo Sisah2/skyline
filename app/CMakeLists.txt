@@ -64,6 +64,9 @@ include_directories(SYSTEM "libraries/lz4/lib")
 add_compile_definitions(VK_USE_PLATFORM_ANDROID_KHR) # We want all the Android-specific structures to be defined
 add_compile_definitions(VULKAN_HPP_NO_SPACESHIP_OPERATOR) # libcxx doesn't implement operator<=> for std::array which breaks this
 add_compile_definitions(VULKAN_HPP_NO_STRUCT_CONSTRUCTORS) # We want to use designated initializers in Vulkan-Hpp
+add_compile_definitions(VULKAN_HPP_NO_SETTERS)
+add_compile_definitions(VULKAN_HPP_NO_SMART_HANDLE)
+
 add_compile_definitions(VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1) # We use the dynamic loader rather than the static one to avoid an additional level of indirection
 add_compile_definitions(VULKAN_HPP_ENABLE_DYNAMIC_LOADER_TOOL=0) # We disable the dynamic loader tool so we can supply our own getInstanceProcAddress function from a custom driver
 include_directories(SYSTEM "libraries/vkhpp")
@@ -172,9 +175,11 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/gpu/cache/graphics_pipeline_cache.cpp
         ${source_DIR}/skyline/gpu/cache/renderpass_cache.cpp
         ${source_DIR}/skyline/gpu/cache/framebuffer_cache.cpp
+        ${source_DIR}/skyline/gpu/interconnect/fermi_2d.cpp
         ${source_DIR}/skyline/gpu/interconnect/command_executor.cpp
         ${source_DIR}/skyline/gpu/interconnect/command_nodes.cpp
         ${source_DIR}/skyline/gpu/interconnect/conversion/quads.cpp
+        ${source_DIR}/skyline/gpu/shaders/helper_shaders.cpp
         ${source_DIR}/skyline/soc/smmu.cpp
         ${source_DIR}/skyline/soc/host1x/syncpoint.cpp
         ${source_DIR}/skyline/soc/host1x/command_fifo.cpp
@@ -193,6 +198,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/soc/gm20b/engines/maxwell_dma.cpp
         ${source_DIR}/skyline/soc/gm20b/engines/maxwell/initialization.cpp
         ${source_DIR}/skyline/soc/gm20b/engines/fermi_2d.cpp
+        ${source_DIR}/skyline/input.cpp
         ${source_DIR}/skyline/input/npad.cpp
         ${source_DIR}/skyline/input/npad_device.cpp
         ${source_DIR}/skyline/input/touch.cpp

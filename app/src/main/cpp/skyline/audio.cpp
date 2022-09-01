@@ -8,7 +8,6 @@ namespace skyline::audio {
         builder.setChannelCount(constant::StereoChannelCount);
         builder.setSampleRate(constant::SampleRate);
         builder.setFormat(constant::PcmFormat);
-        builder.setFramesPerCallback(constant::MixBufferSize);
         builder.setUsage(oboe::Usage::Game);
         builder.setCallback(this);
         builder.setSharingMode(oboe::SharingMode::Exclusive);
@@ -69,9 +68,7 @@ namespace skyline::audio {
     }
 
     void Audio::onErrorAfterClose(oboe::AudioStream *audioStream, oboe::Result error) {
-        if (error == oboe::Result::ErrorDisconnected) {
-            builder.openManagedStream(outputStream);
-            outputStream->requestStart();
-        }
+        builder.openManagedStream(outputStream);
+        outputStream->requestStart();
     }
 }

@@ -35,6 +35,10 @@ class OnScreenControllerView @JvmOverloads constructor(context : Context, attrs 
         private val controllerTypeMappings = mapOf(*ControllerType.values().map {
             it to (setOf(*it.buttons) to setOf(*it.sticks))
         }.toTypedArray())
+
+        private const val SCALE_STEP = 0.05f
+        private const val ALPHA_STEP = 25
+        private val ALPHA_RANGE = 55..255
     }
 
     private val controls = Controls(this)
@@ -150,13 +154,13 @@ class OnScreenControllerView @JvmOverloads constructor(context : Context, attrs 
                                 invalidate()
                             }
                             addListener(object : AnimatorListenerAdapter() {
-                                override fun onAnimationCancel(animation : Animator?) {
+                                override fun onAnimationCancel(animation : Animator) {
                                     super.onAnimationCancel(animation)
                                     onAnimationEnd(animation)
                                     onStickStateChangedListener?.invoke(joystick.stickId, PointF(0f, 0f))
                                 }
 
-                                override fun onAnimationEnd(animation : Animator?) {
+                                override fun onAnimationEnd(animation : Animator) {
                                     super.onAnimationEnd(animation)
                                     if (joystick.shortDoubleTapped)
                                         onButtonStateChangedListener?.invoke(joystick.buttonId, ButtonState.Released)
@@ -249,12 +253,22 @@ class OnScreenControllerView @JvmOverloads constructor(context : Context, attrs 
     }
 
     fun increaseScale() {
-        controls.globalScale += 0.05f
+        controls.globalScale += SCALE_STEP
         invalidate()
     }
 
     fun decreaseScale() {
-        controls.globalScale -= 0.05f
+        controls.globalScale -= SCALE_STEP
+        invalidate()
+    }
+
+    fun increaseOpacity() {
+        controls.alpha = (controls.alpha + ALPHA_STEP).coerceIn(ALPHA_RANGE)
+        invalidate()
+    }
+
+    fun decreaseOpacity() {
+        controls.alpha = (controls.alpha - ALPHA_STEP).coerceIn(ALPHA_RANGE)
         invalidate()
     }
 
