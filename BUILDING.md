@@ -25,7 +25,7 @@ git clone https://github.com/skyline-emu/skyline.git --recursive
 ```
 
 Open Android Studio
-<details><summary><i>First time users only</i></summary>
+<details><summary><i>First-time users only</i></summary>
 <p>
 
 > If you opened Android Studio for the first time, choose the `Standard` install type and complete the setup wizard leaving all settings to their default value.
