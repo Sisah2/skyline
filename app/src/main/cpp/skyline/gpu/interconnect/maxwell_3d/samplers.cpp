@@ -51,8 +51,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     static vk::SamplerAddressMode ConvertSamplerAddressMode(TextureSamplerControl::AddressMode mode) {
-        using TscMode = TextureSamplerControl::AddressMode;
-        using VkMode = vk::SamplerAddressMode;
         switch (mode) {
             case TextureSamplerControl::AddressMode::Repeat:
                 return vk::SamplerAddressMode::eRepeat;

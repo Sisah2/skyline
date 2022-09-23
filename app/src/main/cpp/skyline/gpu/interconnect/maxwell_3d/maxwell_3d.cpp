@@ -26,7 +26,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         executor.AddFlushCallback([this] {
             activeState.MarkAllDirty();
             constantBuffers.MarkAllDirty();
-            samplers.PurgeCaches();
+            samplers.MarkAllDirty();
         });
     }
 
