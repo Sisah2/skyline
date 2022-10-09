@@ -17,7 +17,13 @@ namespace skyline::audio {
     }
 
     void AudioTrack::Stop() {
+        i64 startTime{util::GetTimeNs()};
         auto allSamplesReleased{[&]() {
+            constexpr static size_t MaxPollTime{constant::NsInSecond}; //!< Give up waiting after a while to avoid a deadlock if oboe gets stuck
+            if (util::GetTimeNs() - startTime  > MaxPollTime)
+                return true;
+
+            std::this_thread::yield();
             std::scoped_lock lock{bufferLock};
             return identifiers.empty() || identifiers.back().released;
         }};
