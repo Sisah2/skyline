@@ -48,6 +48,11 @@ namespace skyline::service::hid {
         Result StopSixAxisSensor(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @url https://switchbrew.org/wiki/HID_services#IsSixAxisSensorAtRest
+         */
+        Result IsSixAxisSensorAtRest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Sets the style of controllers supported
          * @url https://switchbrew.org/wiki/HID_services#SetSupportedNpadStyleSet
          */
@@ -174,6 +179,7 @@ namespace skyline::service::hid {
             SFUNC(0xB, IHidServer, ActivateTouchScreen),
             SFUNC(0x42, IHidServer, StartSixAxisSensor),
             SFUNC(0x43, IHidServer, StopSixAxisSensor),
+            SFUNC(0x52, IHidServer, IsSixAxisSensorAtRest),
             SFUNC(0x64, IHidServer, SetSupportedNpadStyleSet),
             SFUNC(0x65, IHidServer, GetSupportedNpadStyleSet),
             SFUNC(0x66, IHidServer, SetSupportedNpadIdType),
