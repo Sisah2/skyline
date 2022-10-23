@@ -34,10 +34,14 @@ namespace skyline {
             isDocked = ktSettings.GetBool("isDocked");
             usernameValue = std::move(ktSettings.GetString("usernameValue"));
             systemLanguage = ktSettings.GetInt<skyline::language::SystemLanguage>("systemLanguage");
+            systemRegion = ktSettings.GetInt<skyline::region::RegionCode>("systemRegion");
             forceTripleBuffering = ktSettings.GetBool("forceTripleBuffering");
             disableFrameThrottling = ktSettings.GetBool("disableFrameThrottling");
             gpuDriver = ktSettings.GetString("gpuDriver");
             gpuDriverLibraryName = ktSettings.GetString("gpuDriverLibraryName");
+            executorSlotCount = ktSettings.GetInt<u32>("executorSlotCount");
+            enableTextureReadbackHack = ktSettings.GetBool("enableTextureReadbackHack");
+            validationLayer = ktSettings.GetBool("validationLayer");
         };
     };
 }

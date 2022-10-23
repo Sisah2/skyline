@@ -113,11 +113,12 @@ namespace skyline::gpu::interconnect {
         auto srcGuestTexture{GetGuestTexture(srcSurface)};
         auto dstGuestTexture{GetGuestTexture(dstSurface)};
 
-        auto &textureManager{executor.AcquireTextureManager()};
-        auto srcTextureView{textureManager.FindOrCreate(srcGuestTexture, executor.tag)};
+        auto srcTextureView{gpu.texture.FindOrCreate(srcGuestTexture, executor.tag)};
+        executor.AttachDependency(srcTextureView);
         executor.AttachTexture(srcTextureView.get());
 
-        auto dstTextureView{textureManager.FindOrCreate(dstGuestTexture, executor.tag)};
+        auto dstTextureView{gpu.texture.FindOrCreate(dstGuestTexture, executor.tag)};
+        executor.AttachDependency(dstTextureView);
         executor.AttachTexture(dstTextureView.get());
 
         // Blit shader always samples from centre so adjust if necessary
@@ -147,6 +148,8 @@ namespace skyline::gpu::interconnect {
                 executor.AddSubpass(std::move(executionCallback), {{static_cast<i32>(dstRectX), static_cast<i32>(dstRectY)}, {dstRectWidth, dstRectHeight} }, {}, {dst});
             }
         );
+
+        executor.NotifyPipelineChange();
     }
 
 }

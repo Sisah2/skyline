@@ -15,12 +15,15 @@ namespace skyline::kernel {
     void Scheduler::SignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
         if (*tls) {
             TRACE_EVENT_END("guest");
-            const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
-            if (signal == PreemptionSignal)
-                state.thread->isPreempted = false;
-            state.scheduler->Rotate(false);
-            YieldPending = false;
-            state.scheduler->WaitSchedule();
+            {
+                TRACE_EVENT_FMT("scheduler", "{} Signal", signal == PreemptionSignal ? "Preemption" : "Yield");
+                const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
+                if (signal == PreemptionSignal)
+                    state.thread->isPreempted = false;
+                state.scheduler->Rotate(false);
+                YieldPending = false;
+                state.scheduler->WaitSchedule();
+            }
             TRACE_EVENT_BEGIN("guest", "Guest");
         } else {
             YieldPending = true;
@@ -164,7 +167,7 @@ namespace skyline::kernel {
         }};
 
         TRACE_EVENT("scheduler", "WaitSchedule");
-        if (loadBalance && thread->affinityMask.count() > 1) {
+        if (loadBalance) {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex

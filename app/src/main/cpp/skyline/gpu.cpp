@@ -17,12 +17,10 @@ namespace skyline::gpu {
             .apiVersion = VkApiVersion,
         };
 
-        #ifdef NDEBUG
-        constexpr std::array<const char *, 0> requiredLayers{};
-        #else
-        constexpr std::array<const char *, 1> requiredLayers{
-            "VK_LAYER_KHRONOS_validation"
-        };
+        std::vector<const char *> requiredLayers{};
+        #ifndef NDEBUG
+        if (*state.settings->validationLayer)
+            requiredLayers.push_back("VK_LAYER_KHRONOS_validation");
         #endif
 
         auto instanceLayers{context.enumerateInstanceLayerProperties()};
@@ -63,7 +61,7 @@ namespace skyline::gpu {
 
         return vk::raii::Instance(context, vk::InstanceCreateInfo{
             .pApplicationInfo = &applicationInfo,
-            .enabledLayerCount = requiredLayers.size(),
+            .enabledLayerCount = static_cast<u32>(requiredLayers.size()),
             .ppEnabledLayerNames = requiredLayers.data(),
             .enabledExtensionCount = requiredInstanceExtensions.size(),
             .ppEnabledExtensionNames = requiredInstanceExtensions.data(),
@@ -247,6 +245,7 @@ namespace skyline::gpu {
         FEAT_REQ(vk::PhysicalDeviceFeatures2, features.independentBlend);
         FEAT_REQ(vk::PhysicalDeviceFeatures2, features.shaderImageGatherExtended);
         FEAT_REQ(vk::PhysicalDeviceFeatures2, features.depthBiasClamp);
+        FEAT_REQ(vk::PhysicalDeviceFeatures2, features.depthClamp);
         FEAT_REQ(vk::PhysicalDeviceShaderDrawParametersFeatures, shaderDrawParameters);
 
         #undef FEAT_REQ

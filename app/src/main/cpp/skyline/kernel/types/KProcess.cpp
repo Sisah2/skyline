@@ -26,6 +26,9 @@ namespace skyline::kernel::type {
     }
 
     void KProcess::Kill(bool join, bool all, bool disableCreation) {
+        Logger::Warn("Killing {}{}KProcess{}", join ? "and joining " : "", all ? "all threads in " : "HOS-0 in ", disableCreation ? " with new thread creation disabled" : "");
+        Logger::EmulationContext.Flush();
+
         bool expected{false};
         if (!join && !alreadyKilled.compare_exchange_strong(expected, true))
             // If the process has already been killed and we don't want to wait for it to join then just instantly return rather than waiting on the mutex
@@ -58,8 +61,8 @@ namespace skyline::kernel::type {
             if ((slot = tlsPage->ReserveSlot()))
                 return slot;
 
-        slot = tlsPages.empty() ? reinterpret_cast<u8 *>(memory.tlsIo.data()) : ((*(tlsPages.end() - 1))->memory->guest.data() + PAGE_SIZE);
-        auto tlsPage{std::make_shared<TlsPage>(std::make_shared<KPrivateMemory>(state, span<u8>{slot, PAGE_SIZE}, memory::Permission(true, true, false), memory::states::ThreadLocal))};
+        slot = tlsPages.empty() ? reinterpret_cast<u8 *>(memory.tlsIo.data()) : ((*(tlsPages.end() - 1))->memory->guest.data() + constant::PageSize);
+        auto tlsPage{std::make_shared<TlsPage>(std::make_shared<KPrivateMemory>(state, span<u8>{slot, constant::PageSize}, memory::Permission(true, true, false), memory::states::ThreadLocal))};
         tlsPages.push_back(tlsPage);
         return tlsPage->ReserveSlot();
     }
