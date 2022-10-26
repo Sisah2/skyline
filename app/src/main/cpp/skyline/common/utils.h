@@ -15,8 +15,9 @@ namespace skyline::util {
      * @return The current time in nanoseconds
      */
     inline i64 GetTimeNs() {
-        u64 frequency;
-        asm("MRS %0, CNTFRQ_EL0" : "=r"(frequency));
+        //u64 frequency;
+        //asm("MRS %0, CNTFRQ_EL0" : "=r"(frequency));
+        constexpr u64 frequency{25600000};
         u64 ticks;
         asm("MRS %0, CNTVCT_EL0" : "=r"(ticks));
         return static_cast<i64>(((ticks / frequency) * constant::NsInSecond) + (((ticks % frequency) * constant::NsInSecond + (frequency / 2)) / frequency));

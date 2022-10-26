@@ -157,8 +157,9 @@ namespace skyline::nce {
         size_t size{guest::SaveCtxSize + guest::LoadCtxSize + MainSvcTrampolineSize};
         std::vector<size_t> offsets;
 
-        u64 frequency;
-        asm("MRS %0, CNTFRQ_EL0" : "=r"(frequency));
+        //u64 frequency;
+        //asm("MRS %0, CNTFRQ_EL0" : "=r"(frequency));
+        constexpr u64 frequency{25600000};
         bool rescaleClock{frequency != TegraX1Freq};
 
         auto start{reinterpret_cast<const u32 *>(text.data())}, end{reinterpret_cast<const u32 *>(text.data() + text.size())};
@@ -240,8 +241,9 @@ namespace skyline::nce {
         std::memcpy(patch, reinterpret_cast<void *>(&guest::LoadCtx), guest::LoadCtxSize * sizeof(u32));
         patch += guest::LoadCtxSize;
 
-        u64 frequency;
-        asm("MRS %0, CNTFRQ_EL0" : "=r"(frequency));
+        //u64 frequency;
+        //asm("MRS %0, CNTFRQ_EL0" : "=r"(frequency));
+        constexpr u64 frequency{25600000};
         bool rescaleClock{frequency != TegraX1Freq};
 
         for (auto offset : offsets) {
