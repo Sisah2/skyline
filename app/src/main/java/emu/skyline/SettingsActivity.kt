@@ -7,9 +7,12 @@ package emu.skyline
 
 import android.os.Bundle
 import android.view.KeyEvent
-import android.view.View
+import android.view.ViewTreeObserver
 import androidx.appcompat.app.AppCompatActivity
+import androidx.coordinatorlayout.widget.CoordinatorLayout
+import androidx.preference.CheckBoxPreference
 import androidx.preference.Preference
+import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceFragmentCompat
 import emu.skyline.databinding.SettingsActivityBinding
 import emu.skyline.preference.IntegerListPreference
@@ -33,8 +36,33 @@ class SettingsActivity : AppCompatActivity() {
         setSupportActionBar(binding.titlebar.toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
-        window.decorView.findViewById<View>(android.R.id.content).viewTreeObserver.addOnTouchModeChangeListener { isInTouchMode ->
-            if (!isInTouchMode) binding.titlebar.appBarLayout.setExpanded(false)
+        var layoutDone = false // Tracks if the layout is complete to avoid retrieving invalid attributes
+        binding.coordinatorLayout.viewTreeObserver.addOnTouchModeChangeListener { isTouchMode ->
+            val layoutUpdate = {
+                val params = binding.settings.layoutParams as CoordinatorLayout.LayoutParams
+                if (!isTouchMode) {
+                    binding.titlebar.appBarLayout.setExpanded(true)
+                    params.height = binding.coordinatorLayout.height - binding.titlebar.toolbar.height
+                } else {
+                    params.height = CoordinatorLayout.LayoutParams.MATCH_PARENT
+                }
+
+                binding.settings.layoutParams = params
+                binding.settings.requestLayout()
+            }
+
+            if (!layoutDone) {
+                binding.coordinatorLayout.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
+                    override fun onGlobalLayout() {
+                        // We need to wait till the layout is done to get the correct height of the toolbar
+                        binding.coordinatorLayout.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                        layoutUpdate()
+                        layoutDone = true
+                    }
+                })
+            } else {
+                layoutUpdate()
+            }
         }
 
         supportFragmentManager
@@ -56,9 +84,29 @@ class SettingsActivity : AppCompatActivity() {
          */
         override fun onCreatePreferences(savedInstanceState : Bundle?, rootKey : String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
+
+            // Uncheck `disable_frame_throttling` if `force_triple_buffering` gets disabled
+            val disableFrameThrottlingPref = findPreference<CheckBoxPreference>("disable_frame_throttling")!!
+            findPreference<CheckBoxPreference>("force_triple_buffering")?.setOnPreferenceChangeListener { _, newValue ->
+                if (newValue == false)
+                    disableFrameThrottlingPref.isChecked = false
+                true
+            }
+
+            // Only show debug settings in debug builds
+            @Suppress("SENSELESS_COMPARISON")
+            if (BuildConfig.BUILD_TYPE != "release")
+                findPreference<Preference>("category_debug")?.isVisible = true
+
+
+            resources.getStringArray(R.array.credits_entries).asIterable().shuffled().forEach {
+                findPreference<PreferenceCategory>("category_credits")?.addPreference(Preference(context!!).apply {
+                    title = it
+                })
+            }
         }
 
-        override fun onDisplayPreferenceDialog(preference : Preference?) {
+        override fun onDisplayPreferenceDialog(preference : Preference) {
             if (preference is IntegerListPreference) {
                 // Check if dialog is already showing
                 if (parentFragmentManager.findFragmentByTag(DIALOG_FRAGMENT_TAG) != null)

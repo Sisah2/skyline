@@ -55,6 +55,7 @@
             android:fontFamily="monospace"
             android:gravity="center"
             android:includeFontPadding="false"
+            android:textAlignment="center"
             android:textSize="26sp"
             tools:text="A" />
 
@@ -68,7 +69,8 @@
         android:max="100"
         android:progress="25"
         android:secondaryProgressTintMode="screen"
-        android:visibility="gone" />
+        android:visibility="gone"
+        tools:visibility="visible" />
 
     <Button
         android:id="@+id/button_reset"

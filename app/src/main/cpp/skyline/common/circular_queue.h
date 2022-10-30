@@ -49,9 +49,10 @@ namespace skyline {
         /**
          * @brief A blocking for-each that runs on every item and waits till new items to run on them as well
          * @param function A function that is called for each item (with the only parameter as a reference to that item)
+         * @param preWait An optional function that's called prior to waiting on more items to be queued
          */
-        template<typename F>
-        [[noreturn]] void Process(F function) {
+        template<typename F1, typename F2>
+        [[noreturn]] void Process(F1 function, F2 preWait) {
             TRACE_EVENT_BEGIN("containers", "CircularQueue::Process");
 
             while (true) {
@@ -59,6 +60,7 @@ namespace skyline {
                     std::unique_lock lock(productionMutex);
 
                     TRACE_EVENT_END("containers");
+                    preWait();
                     produceCondition.wait(lock, [this]() { return start != end; });
                     TRACE_EVENT_BEGIN("containers", "CircularQueue::Process");
                 }
@@ -72,6 +74,21 @@ namespace skyline {
 
                 consumeCondition.notify_one();
             }
+        }
+
+        Type Pop() {
+            std::unique_lock lock(productionMutex);
+            produceCondition.wait(lock, [this]() { return start != end; });
+
+            auto next{start + 1};
+            next = (next == reinterpret_cast<Type *>(vector.end().base())) ? reinterpret_cast<Type *>(vector.begin().base()) : next;
+            Type item{*next};
+            start = next;
+
+            if (start == end)
+                consumeCondition.notify_one();
+
+            return item;
         }
 
         void Push(const Type &item) {
@@ -109,7 +126,7 @@ namespace skyline {
         template<typename TransformedType, typename Transformation>
         void AppendTranform(span <TransformedType> buffer, Transformation transformation) {
             std::unique_lock lock(productionMutex);
-            for (const auto &item : buffer) {
+            for (auto &item : buffer) {
                 auto next{end + 1};
                 next = (next == reinterpret_cast<Type *>(vector.end().base())) ? reinterpret_cast<Type *>(vector.begin().base()) : next;
                 if (next == start) {

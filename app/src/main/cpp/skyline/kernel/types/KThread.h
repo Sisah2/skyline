@@ -72,6 +72,9 @@ namespace skyline {
             bool cancelSync{false}; //!< Whether to cancel the SvcWaitSynchronization call this thread currently is in/the next one it joins
             type::KSyncObject *wakeObject{}; //!< A pointer to the synchronization object responsible for waking this thread up
 
+            bool isPaused{false}; //!< If the thread is currently paused and not runnable
+            bool insertThreadOnResume{false}; //!< If the thread should be inserted into the scheduler when it resumes (used for pausing threads during sleep/sync)
+
             KThread(const DeviceState &state, KHandle handle, KProcess *parent, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore);
 
             ~KThread();
@@ -106,6 +109,7 @@ namespace skyline {
             /**
              * @brief Recursively updates the priority for any threads this thread might be waiting on
              * @note PI is performed by temporarily upgrading a thread's priority if a thread waiting on it has a higher priority to prevent priority inversion
+             * @note This will lock `waiterMutex` internally and it must **not** be held when calling this function
              */
             void UpdatePriorityInheritance();
 

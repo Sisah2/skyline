@@ -15,12 +15,15 @@ namespace skyline::kernel {
     void Scheduler::SignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
         if (*tls) {
             TRACE_EVENT_END("guest");
-            const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
-            if (signal == PreemptionSignal)
-                state.thread->isPreempted = false;
-            state.scheduler->Rotate(false);
-            YieldPending = false;
-            state.scheduler->WaitSchedule();
+            {
+                TRACE_EVENT_FMT("scheduler", "{} Signal", signal == PreemptionSignal ? "Preemption" : "Yield");
+                const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
+                if (signal == PreemptionSignal)
+                    state.thread->isPreempted = false;
+                state.scheduler->Rotate(false);
+                YieldPending = false;
+                state.scheduler->WaitSchedule();
+            }
             TRACE_EVENT_BEGIN("guest", "Guest");
         } else {
             YieldPending = true;
@@ -40,7 +43,7 @@ namespace skyline::kernel {
                     u64 timeslice{};
 
                     if (!candidateCore.queue.empty()) {
-                        std::lock_guard coreLock(candidateCore.mutex);
+                        std::scoped_lock coreLock{candidateCore.mutex};
 
                         auto threadIterator{candidateCore.queue.cbegin()};
                         if (threadIterator != candidateCore.queue.cend()) {
@@ -85,6 +88,13 @@ namespace skyline::kernel {
     void Scheduler::InsertThread(const std::shared_ptr<type::KThread> &thread) {
         auto &core{cores.at(thread->coreId)};
         std::unique_lock lock(core.mutex);
+
+        if (thread->isPaused) {
+            // We cannot insert a thread that is paused, so we need to wait until it has been resumed
+            thread->insertThreadOnResume = false;
+            thread->scheduleCondition.wait(lock, [&]() { return !thread->isPaused; });
+        }
+
         auto nextThread{std::upper_bound(core.queue.begin(), core.queue.end(), thread->priority.load(), type::KThread::IsHigherPriority)};
         if (nextThread == core.queue.begin()) {
             if (nextThread != core.queue.end()) {
@@ -148,7 +158,7 @@ namespace skyline::kernel {
         auto wakeFunction{[&]() {
             if (!thread->affinityMask.test(thread->coreId)) [[unlikely]] {
                 lock.unlock(); // If the core migration mutex is locked by a thread seeking the core mutex, it'll result in a deadlock
-                std::lock_guard migrationLock(thread->coreMigrationMutex);
+                std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 lock.lock();
                 if (!thread->affinityMask.test(thread->coreId)) // We need to retest in case the thread was migrated while the core was unlocked
                     MigrateToCore(thread, core, &cores.at(thread->idealCore), lock);
@@ -157,11 +167,11 @@ namespace skyline::kernel {
         }};
 
         TRACE_EVENT("scheduler", "WaitSchedule");
-        if (loadBalance && thread->affinityMask.count() > 1) {
+        if (loadBalance) {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
-                std::lock_guard migrationLock(thread->coreMigrationMutex);
+                std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 auto newCore{&GetOptimalCoreForThread(state.thread)};
                 lock.lock();
                 if (core != newCore)
@@ -188,7 +198,7 @@ namespace skyline::kernel {
         std::unique_lock lock(core->mutex);
         if (thread->scheduleCondition.wait_for(lock, timeout, [&]() {
             if (!thread->affinityMask.test(thread->coreId)) [[unlikely]] {
-                std::lock_guard migrationLock(thread->coreMigrationMutex);
+                std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 MigrateToCore(thread, core, &cores.at(thread->idealCore), lock);
             }
             return !core->queue.empty() && core->queue.front() == thread;
@@ -256,7 +266,7 @@ namespace skyline::kernel {
     }
 
     void Scheduler::UpdatePriority(const std::shared_ptr<type::KThread> &thread) {
-        std::lock_guard migrationLock(thread->coreMigrationMutex);
+        std::scoped_lock migrationLock{thread->coreMigrationMutex};
         auto *core{&cores.at(thread->coreId)};
         std::unique_lock coreLock(core->mutex);
 
@@ -297,7 +307,7 @@ namespace skyline::kernel {
 
     void Scheduler::UpdateCore(const std::shared_ptr<type::KThread> &thread) {
         auto *core{&cores.at(thread->coreId)};
-        std::lock_guard coreLock(core->mutex);
+        std::scoped_lock coreLock{core->mutex};
         if (core->queue.front() == thread)
             thread->SendSignal(YieldSignal);
         else
@@ -306,7 +316,7 @@ namespace skyline::kernel {
 
     void Scheduler::ParkThread() {
         auto &thread{state.thread};
-        std::lock_guard migrationLock(thread->coreMigrationMutex);
+        std::scoped_lock migrationLock{thread->coreMigrationMutex};
         RemoveThread();
 
         auto originalCoreId{thread->coreId};
@@ -342,5 +352,42 @@ namespace skyline::kernel {
                 parkedThread->scheduleCondition.notify_one();
             }
         }
+    }
+
+    void Scheduler::PauseThread(const std::shared_ptr<type::KThread> &thread) {
+        CoreContext *core{&cores.at(thread->coreId)};
+        std::unique_lock lock{core->mutex};
+
+        thread->isPaused = true;
+
+        auto it{std::find(core->queue.begin(), core->queue.end(), thread)};
+        if (it != core->queue.end()) {
+            thread->insertThreadOnResume = true; // If we're handling removing the thread then we need to be responsible for inserting it back inside ResumeThread
+
+            it = core->queue.erase(it);
+            if (it == core->queue.begin() && it != core->queue.end())
+                (*it)->scheduleCondition.notify_one();
+
+            if (it == core->queue.begin() && !thread->pendingYield) {
+                // We need to send a yield signal to the thread if it's currently running
+                thread->SendSignal(YieldSignal);
+                thread->pendingYield = true;
+                thread->forceYield = true;
+            }
+        } else {
+            // If removal of the thread was performed by a lock/sleep/etc then we don't need to handle inserting it back ourselves inside ResumeThread
+            // It'll be automatically re-inserted when the lock/sleep is completed and InsertThread will block till the thread is resumed
+            thread->insertThreadOnResume = false;
+        }
+    }
+
+    void Scheduler::ResumeThread(const std::shared_ptr<type::KThread> &thread) {
+        thread->isPaused = false;
+        if (thread->insertThreadOnResume)
+            // If we handled removing the thread then we need to be responsible for inserting it back as well
+            InsertThread(thread);
+        else
+            // If we're not inserting the thread back into the queue ourselves then we need to notify the thread inserting it about the updated pause state
+            thread->scheduleCondition.notify_one();
     }
 }

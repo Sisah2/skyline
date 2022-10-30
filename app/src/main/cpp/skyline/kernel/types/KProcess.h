@@ -12,7 +12,7 @@
 namespace skyline {
     namespace constant {
         constexpr u16 TlsSlotSize{0x200}; //!< The size of a single TLS slot
-        constexpr u8 TlsSlots{PAGE_SIZE / TlsSlotSize}; //!< The amount of TLS slots in a single page
+        constexpr u8 TlsSlots{constant::PageSize / TlsSlotSize}; //!< The amount of TLS slots in a single page
         constexpr KHandle BaseHandleIndex{0xD000}; //!< The index of the base handle
     }
 
@@ -117,7 +117,7 @@ namespace skyline {
                 std::unique_lock lock(handleMutex);
 
                 std::shared_ptr<objectClass> item;
-                if constexpr (std::is_same<objectClass, KThread>())
+                if constexpr (std::is_same<objectClass, KThread>() || std::is_same<objectClass, KPrivateMemory>())
                     item = std::make_shared<objectClass>(state, constant::BaseHandleIndex + handles.size(), args...);
                 else
                     item = std::make_shared<objectClass>(state, args...);
@@ -230,15 +230,27 @@ namespace skyline {
              */
             void ConditionalVariableSignal(u32 *key, i32 amount);
 
-            /**
-             * @brief Waits on the supplied address with the specified arbitration function
-             */
-            Result WaitForAddress(u32 *address, u32 value, i64 timeout, bool(*arbitrationFunction)(u32 *address, u32 value));
+            enum class ArbitrationType : u32 {
+                WaitIfLessThan = 0,
+                DecrementAndWaitIfLessThan = 1,
+                WaitIfEqual = 2,
+            };
 
             /**
-             * @brief Signals a variable amount of waiters at the supplied address
+             * @brief Waits on the supplied address with the specified arbitration type
              */
-            Result SignalToAddress(u32 *address, u32 value, i32 amount, bool(*mutateFunction)(u32 *address, u32 value, u32 waiterCount) = nullptr);
+            Result WaitForAddress(u32 *address, u32 value, i64 timeout, ArbitrationType type);
+
+            enum class SignalType : u32 {
+                Signal = 0,
+                SignalAndIncrementIfEqual = 1,
+                SignalAndModifyBasedOnWaitingThreadCountIfEqual = 2,
+            };
+
+            /**
+             * @brief Signals a variable for amount of waiters at the supplied address with the specified signal type
+             */
+            Result SignalToAddress(u32 *address, u32 value, i32 amount, SignalType type);
         };
     }
 }

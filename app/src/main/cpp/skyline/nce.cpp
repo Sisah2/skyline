@@ -41,11 +41,16 @@ namespace skyline::nce {
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 Logger::ErrorNoPrefix("{} (SVC: {})\nStack Trace:{}", e.what(), svc.name, state.loader->GetStackTrace(e.frames));
+                Logger::EmulationContext.Flush();
+
                 if (state.thread->id) {
                     signal::BlockSignal({SIGINT});
                     state.process->Kill(false);
                 }
+            } else {
+                Logger::EmulationContext.Flush();
             }
+
             abi::__cxa_end_catch(); // We call this prior to the longjmp to cause the exception object to be destroyed
             std::longjmp(state.thread->originalCtx, true);
         } catch (const ExitException &e) {
@@ -53,6 +58,19 @@ namespace skyline::nce {
                 signal::BlockSignal({SIGINT});
                 state.process->Kill(false);
             }
+
+            abi::__cxa_end_catch();
+            std::longjmp(state.thread->originalCtx, true);
+        } catch (const exception &e) {
+            Logger::ErrorNoPrefix("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
+            Logger::EmulationContext.Flush();
+
+            if (state.thread->id) {
+                signal::BlockSignal({SIGINT});
+                state.process->Kill(false);
+            }
+
+            abi::__cxa_end_catch();
             std::longjmp(state.thread->originalCtx, true);
         } catch (const std::exception &e) {
             if (svc)
@@ -60,10 +78,13 @@ namespace skyline::nce {
             else
                 Logger::ErrorNoPrefix("{} (SVC: 0x{:X})\nStack Trace:{}", e.what(), svcId, state.loader->GetStackTrace());
 
+            Logger::EmulationContext.Flush();
+
             if (state.thread->id) {
                 signal::BlockSignal({SIGINT});
                 state.process->Kill(false);
             }
+
             abi::__cxa_end_catch();
             std::longjmp(state.thread->originalCtx, true);
         }
@@ -75,6 +96,12 @@ namespace skyline::nce {
         if (*tls) { // If TLS was restored then this occurred in guest code
             auto &mctx{ctx->uc_mcontext};
             const auto &state{*reinterpret_cast<ThreadContext *>(*tls)->state};
+
+            if (signal == SIGSEGV)
+                // If we get a guest access violation then we want to handle any accesses that may be from a trapped region
+                if (state.nce->TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
+                    return;
+
             if (signal != SIGINT) {
                 signal::StackFrame topFrame{.lr = reinterpret_cast<void *>(ctx->uc_mcontext.pc), .next = reinterpret_cast<signal::StackFrame *>(ctx->uc_mcontext.regs[29])};
                 std::string trace{state.loader->GetStackTrace(&topFrame)};
@@ -84,10 +111,11 @@ namespace skyline::nce {
                     cpuContext += fmt::format("\n  Fault Address: 0x{:X}", mctx.fault_address);
                 if (mctx.sp)
                     cpuContext += fmt::format("\n  Stack Pointer: 0x{:X}", mctx.sp);
-                for (u8 index{}; index < (sizeof(mcontext_t::regs) / sizeof(u64)); index += 2)
+                for (size_t index{}; index < (sizeof(mcontext_t::regs) / sizeof(u64)); index += 2)
                     cpuContext += fmt::format("\n  X{:<2}: 0x{:<16X} X{:<2}: 0x{:X}", index, mctx.regs[index], index + 1, mctx.regs[index + 1]);
 
                 Logger::Error("Thread #{} has crashed due to signal: {}\nStack Trace:{}\nCPU Context:{}", state.thread->id, strsignal(signal), trace, cpuContext);
+                Logger::EmulationContext.Flush();
 
                 if (state.thread->id) {
                     signal::BlockSignal({SIGINT});
@@ -101,35 +129,52 @@ namespace skyline::nce {
 
             *tls = nullptr;
         } else { // If TLS wasn't restored then this occurred in host code
-            if (signal == SIGSEGV) {
-                bool runningUnderDebugger{[]() {
-                    static std::ifstream status("/proc/self/status");
-                    status.seekg(0);
-
-                    constexpr std::string_view TracerPidTag = "TracerPid:";
-                    for (std::string line; std::getline(status, line);) {
-                        if (line.starts_with(TracerPidTag)) {
-                            line = line.substr(TracerPidTag.size());
-
-                            for (char character : line)
-                                if (std::isspace(character))
-                                    continue;
-                                else
-                                    return character != '0';
-
-                            return false;
-                        }
-                    }
-
-                    return false;
-                }()};
-
-                if (runningUnderDebugger)
-                    raise(SIGTRAP); // Notify the debugger if we've got a SIGSEGV as the debugger doesn't catch them by default as they might be hooked
-            }
-
-            signal::ExceptionalSignalHandler(signal, info, ctx); //!< Delegate throwing a host exception to the exceptional signal handler
+            HostSignalHandler(signal, info, ctx);
         }
+    }
+
+    static NCE *staticNce{nullptr}; //!< A static instance of NCE for use in the signal handler
+
+    void NCE::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+        if (signal == SIGSEGV) {
+            if (staticNce && staticNce->TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
+                return;
+
+            bool runningUnderDebugger{[]() {
+                static std::ifstream status("/proc/self/status");
+                status.seekg(0);
+
+                constexpr std::string_view TracerPidTag{"TracerPid:"};
+                for (std::string line; std::getline(status, line);) {
+                    if (line.starts_with(TracerPidTag)) {
+                        line = line.substr(TracerPidTag.size());
+
+                        for (char character : line)
+                            if (std::isspace(character))
+                                continue;
+                            else
+                                return character != '0';
+
+                        return false;
+                    }
+                }
+
+                return false;
+            }()};
+
+            if (runningUnderDebugger) {
+                /* Variables for debugger, these are meant to be read and utilized by the debugger to break in user code with all registers intact */
+                void *pc{reinterpret_cast<void *>(ctx->uc_mcontext.pc)}; // Use 'p pc' to get the value of this and 'breakpoint set -t current -a ${value of pc}' to break in user code
+                bool shouldReturn{true}; // Set this to false to throw an exception instead of returning
+
+                raise(SIGTRAP); // Notify the debugger if we've got a SIGSEGV as the debugger doesn't catch them by default as they might be hooked
+
+                if (shouldReturn)
+                    return;
+            }
+        }
+
+        signal::ExceptionalSignalHandler(signal, info, ctx); // Delegate throwing a host exception to the exceptional signal handler
     }
 
     void *NceTlsRestorer() {
@@ -143,6 +188,11 @@ namespace skyline::nce {
 
     NCE::NCE(const DeviceState &state) : state(state) {
         signal::SetTlsRestorer(&NceTlsRestorer);
+        staticNce = this;
+    }
+
+    NCE::~NCE() {
+        staticNce = nullptr;
     }
 
     constexpr u8 MainSvcTrampolineSize{17}; // Size of the main SVC trampoline function in u32 units
@@ -194,7 +244,7 @@ namespace skyline::nce {
                 offsets.push_back(instructionOffset);
             }
         }
-        return {util::AlignUp(size * sizeof(u32), PAGE_SIZE), offsets};
+        return {util::AlignUp(size * sizeof(u32), constant::PageSize), offsets};
     }
 
     void NCE::PatchCode(std::vector<u8> &text, u32 *patch, size_t patchSize, const std::vector<size_t> &offsets) {
@@ -356,5 +406,166 @@ namespace skyline::nce {
                 patch++;
             }
         }
+    }
+
+    NCE::CallbackEntry::CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, writeCallback{std::move(writeCallback)} {}
+
+    void NCE::ReprotectIntervals(const std::vector<TrapMap::Interval> &intervals, TrapProtection protection) {
+        TRACE_EVENT("host", "NCE::ReprotectIntervals");
+
+        auto reprotectIntervalsWithFunction = [&intervals](auto getProtection) {
+            for (auto region : intervals) {
+                region = region.Align(constant::PageSize);
+                mprotect(region.start, region.Size(), getProtection(region));
+            }
+        };
+
+        // We need to determine the lowest protection possible for the given interval
+        if (protection == TrapProtection::None) {
+            reprotectIntervalsWithFunction([&](auto region) {
+                auto entries{trapMap.GetRange(region)};
+
+                TrapProtection lowestProtection{TrapProtection::None};
+                for (const auto &entry : entries) {
+                    auto entryProtection{entry.get().protection};
+                    if (entryProtection > lowestProtection) {
+                        lowestProtection = entryProtection;
+                        if (entryProtection == TrapProtection::ReadWrite)
+                            return PROT_NONE;
+                    }
+                }
+
+                switch (lowestProtection) {
+                    case TrapProtection::None:
+                        return PROT_READ | PROT_WRITE | PROT_EXEC;
+                    case TrapProtection::WriteOnly:
+                        return PROT_READ | PROT_EXEC;
+                    case TrapProtection::ReadWrite:
+                        return PROT_NONE;
+                }
+            });
+        } else if (protection == TrapProtection::WriteOnly) {
+            reprotectIntervalsWithFunction([&](auto region) {
+                auto entries{trapMap.GetRange(region)};
+                for (const auto &entry : entries)
+                    if (entry.get().protection == TrapProtection::ReadWrite)
+                        return PROT_NONE;
+
+                return PROT_READ | PROT_EXEC;
+            });
+        } else if (protection == TrapProtection::ReadWrite) {
+            reprotectIntervalsWithFunction([&](auto region) {
+                return PROT_NONE; // No checks are needed as this is already the highest level of protection
+            });
+        }
+    }
+
+    bool NCE::TrapHandler(u8 *address, bool write) {
+        TRACE_EVENT("host", "NCE::TrapHandler");
+
+        LockCallback lockCallback{};
+        while (true) {
+            if (lockCallback) {
+                // We want to avoid a deadlock of holding trapMutex while locking the resource inside a callback while another thread holding the resource's mutex waits on trapMutex, we solve this by quitting the loop if a callback would be blocking and attempt to lock the resource externally
+                lockCallback();
+                lockCallback = {};
+            }
+
+            std::scoped_lock lock(trapMutex);
+
+            // Retrieve any callbacks for the page that was faulted
+            auto[entries, intervals]{trapMap.GetAlignedRecursiveRange<constant::PageSize>(address)};
+            if (entries.empty())
+                return false; // There's no callbacks associated with this page
+
+            // Do callbacks for every entry in the intervals
+            if (write) {
+                for (auto entryRef : entries) {
+                    auto &entry{entryRef.get()};
+                    if (entry.protection == TrapProtection::None)
+                        // We don't need to do the callback if the entry doesn't require any protection already
+                        continue;
+
+                    if (!entry.writeCallback()) {
+                        lockCallback = entry.lockCallback;
+                        break;
+                    }
+                    entry.protection = TrapProtection::None; // We don't need to protect this entry anymore
+                }
+                if (lockCallback)
+                    continue; // We need to retry the loop because a callback was blocking
+            } else {
+                bool allNone{true}; // If all entries require no protection, we can protect to allow all accesses
+                for (auto entryRef : entries) {
+                    auto &entry{entryRef.get()};
+                    if (entry.protection < TrapProtection::ReadWrite) {
+                        // We don't need to do the callback if the entry can already handle read accesses
+                        allNone = allNone && entry.protection == TrapProtection::None;
+                        continue;
+                    }
+
+                    if (!entry.readCallback()) {
+                        lockCallback = entry.lockCallback;
+                        break;
+                    }
+                    entry.protection = TrapProtection::WriteOnly; // We only need to trap writes to this entry
+                }
+                if (lockCallback)
+                    continue; // We need to retry the loop because a callback was blocking
+                write = allNone;
+            }
+
+            int permission{PROT_READ | (write ? PROT_WRITE : 0) | PROT_EXEC};
+            for (const auto &interval : intervals)
+                // Reprotect the interval to the lowest protection level that the callbacks performed allow
+                mprotect(interval.start, interval.Size(), permission);
+
+            return true;
+        }
+    }
+
+    constexpr NCE::TrapHandle::TrapHandle(const TrapMap::GroupHandle &handle) : TrapMap::GroupHandle(handle) {}
+
+    NCE::TrapHandle NCE::CreateTrap(span<span<u8>> regions, const LockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback) {
+        TRACE_EVENT("host", "NCE::CreateTrap");
+        std::scoped_lock lock{trapMutex};
+        TrapHandle handle{trapMap.Insert(regions, CallbackEntry{TrapProtection::None, lockCallback, readCallback, writeCallback})};
+        return handle;
+    }
+
+    void NCE::TrapRegions(TrapHandle handle, bool writeOnly) {
+        TRACE_EVENT("host", "NCE::TrapRegions");
+        std::scoped_lock lock{trapMutex};
+        auto protection{writeOnly ? TrapProtection::WriteOnly : TrapProtection::ReadWrite};
+        handle->value.protection = protection;
+        ReprotectIntervals(handle->intervals, protection);
+    }
+
+    void NCE::PageOutRegions(TrapHandle handle) {
+        TRACE_EVENT("host", "NCE::PageOutRegions");
+        std::scoped_lock lock{trapMutex};
+        for (auto region : handle->intervals) {
+            auto freeStart{util::AlignUp(region.start, constant::PageSize)}, freeEnd{util::AlignDown(region.end, constant::PageSize)}; // We want to avoid the first and last page as they may contain unrelated data
+            ssize_t freeSize{freeEnd - freeStart};
+
+            constexpr ssize_t MinimumPageoutSize{constant::PageSize}; //!< The minimum size to page out, we don't want to page out small intervals for performance reasons
+            if (freeSize > MinimumPageoutSize)
+                state.process->memory.FreeMemory(span<u8>{freeStart, static_cast<size_t>(freeSize)});
+        }
+    }
+
+    void NCE::RemoveTrap(TrapHandle handle) {
+        TRACE_EVENT("host", "NCE::RemoveTrap");
+        std::scoped_lock lock{trapMutex};
+        handle->value.protection = TrapProtection::None;
+        ReprotectIntervals(handle->intervals, TrapProtection::None);
+    }
+
+    void NCE::DeleteTrap(TrapHandle handle) {
+        TRACE_EVENT("host", "NCE::DeleteTrap");
+        std::scoped_lock lock{trapMutex};
+        handle->value.protection = TrapProtection::None;
+        ReprotectIntervals(handle->intervals, TrapProtection::None);
+        trapMap.Remove(handle);
     }
 }

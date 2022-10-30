@@ -28,7 +28,7 @@ import emu.skyline.R as sR
  * @see androidx.preference.ListPreference
  */
 @SuppressLint("RestrictedApi")
-class IntegerListPreference @JvmOverloads constructor(
+open class IntegerListPreference @JvmOverloads constructor(
     context : Context,
     attrs : AttributeSet? = null,
     defStyleAttr : Int = TypedArrayUtils.getAttr(
@@ -142,7 +142,7 @@ class IntegerListPreference @JvmOverloads constructor(
             getPersistedInt(0)
     }
 
-    override fun onSaveInstanceState() : Parcelable {
+    override fun onSaveInstanceState() : Parcelable? {
         val superState = super.onSaveInstanceState()
         if (isPersistent)
             // No need to save instance state since it's persistent

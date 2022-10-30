@@ -13,7 +13,7 @@ namespace skyline::gpu::memory {
             vk::throwResultException(vk::Result(result), function);
     }
 
-    StagingBuffer::~StagingBuffer() {
+    Buffer::~Buffer() {
         if (vmaAllocator && vmaAllocation && vkBuffer)
             vmaDestroyBuffer(vmaAllocator, vkBuffer, vmaAllocation);
     }
@@ -65,10 +65,9 @@ namespace skyline::gpu::memory {
             .device = *gpu.vkDevice,
             .instance = *gpu.vkInstance,
             .pVulkanFunctions = &vulkanFunctions,
-            .vulkanApiVersion = GPU::VkApiVersion,
+            .vulkanApiVersion = VkApiVersion,
         };
         ThrowOnFail(vmaCreateAllocator(&allocatorCreateInfo, &vmaAllocator));
-        // TODO: Use VK_KHR_dedicated_allocation when available (Should be on Adreno GPUs)
     }
 
     MemoryManager::~MemoryManager() {
@@ -93,7 +92,29 @@ namespace skyline::gpu::memory {
         VmaAllocationInfo allocationInfo;
         ThrowOnFail(vmaCreateBuffer(vmaAllocator, &static_cast<const VkBufferCreateInfo &>(bufferCreateInfo), &allocationCreateInfo, &buffer, &allocation, &allocationInfo));
 
-        return std::make_shared<memory::StagingBuffer>(reinterpret_cast<u8 *>(allocationInfo.pMappedData), allocationInfo.size, vmaAllocator, buffer, allocation);
+        return std::make_shared<memory::StagingBuffer>(reinterpret_cast<u8 *>(allocationInfo.pMappedData), size, vmaAllocator, buffer, allocation);
+    }
+
+    Buffer MemoryManager::AllocateBuffer(vk::DeviceSize size) {
+        vk::BufferCreateInfo bufferCreateInfo{
+            .size = size,
+            .usage = vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eUniformTexelBuffer | vk::BufferUsageFlagBits::eStorageTexelBuffer | vk::BufferUsageFlagBits::eUniformBuffer | vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransformFeedbackBufferEXT,
+            .sharingMode = vk::SharingMode::eExclusive,
+            .queueFamilyIndexCount = 1,
+            .pQueueFamilyIndices = &gpu.vkQueueFamilyIndex,
+        };
+        VmaAllocationCreateInfo allocationCreateInfo{
+            .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+            .usage = VMA_MEMORY_USAGE_UNKNOWN,
+            .requiredFlags = static_cast<VkMemoryPropertyFlags>(vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eDeviceLocal),
+        };
+
+        VkBuffer buffer;
+        VmaAllocation allocation;
+        VmaAllocationInfo allocationInfo;
+        ThrowOnFail(vmaCreateBuffer(vmaAllocator, &static_cast<const VkBufferCreateInfo &>(bufferCreateInfo), &allocationCreateInfo, &buffer, &allocation, &allocationInfo));
+
+        return Buffer(reinterpret_cast<u8 *>(allocationInfo.pMappedData), size, vmaAllocator, buffer, allocation);
     }
 
     Image MemoryManager::AllocateImage(const vk::ImageCreateInfo &createInfo) {

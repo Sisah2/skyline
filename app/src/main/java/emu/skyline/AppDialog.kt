@@ -43,7 +43,7 @@ class AppDialog : BottomSheetDialogFragment() {
 
     private lateinit var binding : AppDialogBinding
 
-    private val item by lazy { requireArguments().getSerializable("item") as AppItem }
+    private val item by lazy { requireArguments().getSerializable("item")!! as AppItem }
 
     /**
      * This inflates the layout of the dialog after initial view creation
@@ -76,7 +76,8 @@ class AppDialog : BottomSheetDialogFragment() {
 
         binding.gameIcon.setImageBitmap(item.icon ?: missingIcon)
         binding.gameTitle.text = item.title
-        binding.gameSubtitle.text = item.subTitle ?: item.loaderResultString(requireContext())
+        binding.gameVersion.text = item.version ?: item.loaderResultString(requireContext())
+        binding.gameAuthor.text = item.author
 
         binding.gamePlay.isEnabled = item.loaderResult == LoaderResult.Success
         binding.gamePlay.setOnClickListener {

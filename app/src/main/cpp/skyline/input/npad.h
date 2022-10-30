@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <range/v3/algorithm.hpp>
 #include "npad_device.h"
 
 namespace skyline::input {
@@ -48,6 +49,7 @@ namespace skyline::input {
         std::vector<NpadId> supportedIds; //!< The NPadId(s) that are supported by the application
         NpadStyleSet styles; //!< The styles that are supported by the application
         NpadJoyOrientation orientation{}; //!< The orientation all of Joy-Cons are in (This affects stick transformation for them)
+        NpadHandheldActivationMode handheldActivationMode{NpadHandheldActivationMode::Dual}; //!< By default two controllers are required to activate handheld mode
 
         /**
          * @param hid A pointer to HID Shared Memory on the host
@@ -66,6 +68,37 @@ namespace skyline::input {
          */
         constexpr NpadDevice &operator[](NpadId id) noexcept {
             return npads.operator[](Translate(id));
+        }
+
+        /**
+         * @brief Counts the number of currently connected controllers
+         */
+        size_t GetConnectedControllerCount() {
+             std::scoped_lock lock{mutex};
+             return static_cast<size_t>(ranges::count_if(controllers, [](const auto &controller) {
+                 return controller.device != nullptr && controller.device->connectionState.connected;
+             }));
+         }
+
+        /**
+         * @brief Checks if the NpadId is valid
+         */
+        bool IsNpadIdValid(NpadId id) {
+            switch (id) {
+                case NpadId::Player1:
+                case NpadId::Player2:
+                case NpadId::Player3:
+                case NpadId::Player4:
+                case NpadId::Player5:
+                case NpadId::Player6:
+                case NpadId::Player7:
+                case NpadId::Player8:
+                case NpadId::Unknown:
+                case NpadId::Handheld:
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         /**

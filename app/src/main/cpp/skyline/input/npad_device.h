@@ -8,6 +8,15 @@
 
 namespace skyline::input {
     /**
+     * @brief How many joycons must be attached for handheld mode to be triggered
+     */
+    enum class NpadHandheldActivationMode : u64 {
+        Dual = 0,
+        Single = 1,
+        None = 2,
+    };
+
+    /**
      * @brief The orientations the Joy-Con(s) can be held in
      */
     enum class NpadJoyOrientation : i64 {
@@ -83,11 +92,22 @@ namespace skyline::input {
                     return NpadControllerType::JoyconLeft;
                 case 7:
                     return NpadControllerType::JoyconRight;
+                case 8:
+                    return NpadControllerType::Gamecube;
                 default:
                     return NpadControllerType::None;
             }
         }
     };
+
+    /**
+     * @url https://switchbrew.org/wiki/HID_services#VibrationDeviceInfo
+     */
+    struct NpadVibrationDeviceInfo {
+        NpadVibrationDeviceType deviceType;
+        NpadVibrationDevicePosition position;
+    };
+    static_assert(sizeof(NpadVibrationDeviceInfo) == 0x8);
 
     /**
      * @brief The parameters to produce a vibration using an LRA
@@ -116,13 +136,24 @@ namespace skyline::input {
         NpadSection &section; //!< The section in HID shared memory for this controller
         NpadControllerInfo *controllerInfo{}; //!< The NpadControllerInfo for this controller's type
         u64 globalTimestamp{}; //!< An incrementing timestamp that's common across all sections
+        NpadControllerState controllerState{}, defaultState{}; //!< The current state of the controller (normal and default)
 
         /**
-         * @brief Updates the headers and creates a new entry in HID Shared Memory
+         * @brief Updates the headers and writes a new entry in HID Shared Memory
          * @param info The controller info of the NPad that needs to be updated
-         * @return The next entry that has been created with values from the last entry
+         * @param entry An entry with the state of the controller
          */
-        NpadControllerState &GetNextEntry(NpadControllerInfo &info);
+        void WriteNextEntry(NpadControllerInfo &info, NpadControllerState entry);
+
+        /**
+         * @brief Writes on all ring lifo buffers a new empty entry in HID Shared Memory
+         */
+        void WriteEmptyEntries();
+
+        /**
+         * @brief Reverts all device properties to the default state
+         */
+        void ResetDeviceProperties();
 
         /**
          * @return The NpadControllerInfo for this controller based on its type
@@ -159,6 +190,11 @@ namespace skyline::input {
          * @brief Disconnects this controller from the guest
          */
         void Disconnect();
+
+        /**
+         * @brief Writes the current state of the controller to HID shared memory
+         */
+        void UpdateSharedMemory();
 
         /**
          * @brief Changes the state of buttons to the specified state

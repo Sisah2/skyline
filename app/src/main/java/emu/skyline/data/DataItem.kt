@@ -30,9 +30,14 @@ data class AppItem(private val meta : AppEntry) : DataItem() {
     val title get() = meta.name
 
     /**
-     * The string used as the sub-title, we currently use the author
+     * The application version
      */
-    val subTitle get() = meta.author
+    val version get() = meta.version
+
+    /**
+     * The application author
+     */
+    val author get() = meta.author
 
     /**
      * The URI of the application's image file

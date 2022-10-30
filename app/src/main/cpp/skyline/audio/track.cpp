@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include "downmixer.h"
 #include "track.h"
 
 namespace skyline::audio {
@@ -11,16 +12,23 @@ namespace skyline::audio {
         if (sampleRate != constant::SampleRate)
             throw exception("Unsupported audio sample rate: {}", sampleRate);
 
-        if (channelCount != constant::ChannelCount)
+        if (channelCount != constant::StereoChannelCount && channelCount != constant::SurroundChannelCount)
             throw exception("Unsupported quantity of audio channels: {}", channelCount);
     }
 
     void AudioTrack::Stop() {
-        while (!identifiers.end()->released);
+        auto allSamplesReleased{[&]() {
+            std::scoped_lock lock{bufferLock};
+            return identifiers.empty() || identifiers.back().released;
+        }};
+
+        while (!allSamplesReleased());
         playbackState = AudioOutState::Stopped;
     }
 
     bool AudioTrack::ContainsBuffer(u64 tag) {
+        std::scoped_lock lock(bufferLock);
+
         // Iterate from front of queue as we don't want released samples
         for (auto identifier{identifiers.crbegin()}; identifier != identifiers.crend(); identifier++) {
             if (identifier->released)
@@ -35,7 +43,7 @@ namespace skyline::audio {
 
     std::vector<u64> AudioTrack::GetReleasedBuffers(u32 max) {
         std::vector<u64> bufferIds;
-        std::lock_guard trackGuard(bufferLock);
+        std::scoped_lock lock(bufferLock);
 
         for (u32 index{}; index < max; index++) {
             if (identifiers.empty() || !identifiers.back().released)
@@ -48,16 +56,23 @@ namespace skyline::audio {
     }
 
     void AudioTrack::AppendBuffer(u64 tag, span<i16> buffer) {
+        std::scoped_lock lock(bufferLock);
+
+        size_t size{(channelCount == constant::SurroundChannelCount) ? (buffer.size() / sizeof(Surround51Sample)) * sizeof(StereoSample) : buffer.size()};
         BufferIdentifier identifier{
             .released = false,
             .tag = tag,
-            .finalSample = identifiers.empty() ? (buffer.size()) : (buffer.size() + identifiers.front().finalSample)
+            .finalSample = identifiers.empty() ? size : (size + identifiers.front().finalSample)
         };
 
-        std::lock_guard guard(bufferLock);
-
         identifiers.push_front(identifier);
-        samples.Append(buffer);
+
+        if (channelCount == constant::SurroundChannelCount) {
+            auto stereoBuffer{DownMix(buffer.cast<Surround51Sample>())};
+            samples.Append(span(stereoBuffer).cast<i16>());
+        } else {
+            samples.Append(buffer);
+        }
     }
 
     void AudioTrack::CheckReleasedBuffers() {

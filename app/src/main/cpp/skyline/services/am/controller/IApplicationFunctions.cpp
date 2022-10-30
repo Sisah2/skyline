@@ -4,14 +4,17 @@
 #include <common/uuid.h>
 #include <mbedtls/sha1.h>
 #include <loader/loader.h>
-#include <os.h>
+#include <common/settings.h>
 #include <kernel/types/KProcess.h>
 #include <services/account/IAccountServiceForApplication.h>
-#include <services/am/storage/IStorage.h>
+#include <services/am/storage/VectorIStorage.h>
 #include "IApplicationFunctions.h"
 
 namespace skyline::service::am {
-    IApplicationFunctions::IApplicationFunctions(const DeviceState &state, ServiceManager &manager) : gpuErrorEvent(std::make_shared<type::KEvent>(state, false)), BaseService(state, manager) {}
+    IApplicationFunctions::IApplicationFunctions(const DeviceState &state, ServiceManager &manager)
+        : BaseService(state, manager),
+          gpuErrorEvent(std::make_shared<type::KEvent>(state, false)),
+          friendInvitationStorageChannelEvent(std::make_shared<type::KEvent>(state, false)) {}
 
     Result IApplicationFunctions::PopLaunchParameter(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         constexpr u32 LaunchParameterMagic{0xC79497CA}; //!< The magic of the application launch parameters
@@ -29,7 +32,7 @@ namespace skyline::service::am {
                 return result::NotAvailable;
 
             case LaunchParameterKind::PreselectedUser: {
-                storageService = std::make_shared<IStorage>(state, manager, LaunchParameterSize);
+                storageService = std::make_shared<VectorIStorage>(state, manager, LaunchParameterSize);
 
                 storageService->Push<u32>(LaunchParameterMagic);
                 storageService->Push<u32>(1);
@@ -54,14 +57,25 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result IApplicationFunctions::GetDesiredLanguage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto desiredLanguage{language::GetApplicationLanguage(state.os->systemLanguage)};
+    Result IApplicationFunctions::SetTerminateResult(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto result{request.Pop<Result>()};
+        Logger::Info("App set termination result: {}", result.raw);
+        return {};
+    }
 
-        // In the future we might want to trigger an UI dialog if the user selected languages is not available, for now it will use the first available
+    Result IApplicationFunctions::GetDesiredLanguage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto desiredLanguage{language::GetApplicationLanguage(*state.settings->systemLanguage)};
+
+        // In the future we might want to trigger an UI dialog if the user-selected language is not available, for now it will use the first one available
         if (((1 << static_cast<u32>(desiredLanguage)) & state.loader->nacp->nacpContents.supportedLanguageFlag) == 0)
             desiredLanguage = state.loader->nacp->GetFirstSupportedLanguage();
 
         response.Push(language::GetLanguageCode(language::GetSystemLanguage(desiredLanguage)));
+        return {};
+    }
+
+    Result IApplicationFunctions::GetDisplayVersion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push(state.loader->nacp->nacpContents.displayVersion);
         return {};
     }
 
@@ -135,6 +149,13 @@ namespace skyline::service::am {
     Result IApplicationFunctions::GetGpuErrorDetectedSystemEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto handle{state.process->InsertItem(gpuErrorEvent)};
         Logger::Debug("GPU Error Event Handle: 0x{:X}", handle);
+        response.copyHandles.push_back(handle);
+        return {};
+    }
+
+    Result IApplicationFunctions::GetFriendInvitationStorageChannelEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto handle{state.process->InsertItem(friendInvitationStorageChannelEvent)};
+        Logger::Debug("Friend Invitiation Storage Channel Event Handle: 0x{:X}", handle);
         response.copyHandles.push_back(handle);
         return {};
     }

@@ -6,17 +6,19 @@
         <emu.skyline.preference.FolderPickerPreference
             app:key="search_location"
             app:title="@string/search_location" />
+        <emu.skyline.preference.DocumentsProviderPreference
+            app:key="document_provider"
+            app:summary="@string/open_data_directory_summary"
+            app:title="@string/open_data_directory" />
         <emu.skyline.preference.ThemePreference
             android:defaultValue="2"
             android:entries="@array/app_theme"
-            android:entryValues="@array/app_theme_val"
             app:key="app_theme"
             app:title="@string/theme"
             app:useSimpleSummaryProvider="true" />
-        <ListPreference
+        <emu.skyline.preference.IntegerListPreference
             android:defaultValue="1"
             android:entries="@array/layout_type"
-            android:entryValues="@array/layout_type_val"
             app:key="layout_type"
             app:title="@string/layout_type"
             app:useSimpleSummaryProvider="true" />
@@ -32,19 +34,15 @@
             android:summaryOn="@string/perf_stats_desc_on"
             app:key="perf_stats"
             app:title="@string/perf_stats" />
-        <ListPreference
+        <emu.skyline.preference.LogLevelPreference
             android:defaultValue="2"
             android:entries="@array/log_level"
-            android:entryValues="@array/log_level_val"
             app:key="log_level"
             app:title="@string/log_level"
             app:useSimpleSummaryProvider="true" />
-        <CheckBoxPreference
-            android:defaultValue="false"
-            android:summaryOff="@string/log_compact_desc_off"
-            android:summaryOn="@string/log_compact_desc_on"
-            app:key="log_compact"
-            app:title="@string/log_compact" />
+        <emu.skyline.preference.GpuDriverPreference
+            app:key="gpu_driver"
+            app:title="@string/gpu_driver_config" />
     </PreferenceCategory>
     <PreferenceCategory
         android:key="category_keys"
@@ -65,7 +63,7 @@
             android:defaultValue="true"
             android:summaryOff="@string/handheld_enabled"
             android:summaryOn="@string/docked_enabled"
-            app:key="operation_mode"
+            app:key="is_docked"
             app:title="@string/use_docked" />
         <emu.skyline.preference.CustomEditTextPreference
             android:defaultValue="@string/username_default"
@@ -80,10 +78,24 @@
             app:refreshRequired="true"
             app:title="@string/system_language"
             app:useSimpleSummaryProvider="true" />
+        <emu.skyline.preference.IntegerListPreference
+            android:defaultValue="-1"
+            android:entries="@array/system_region"
+            android:entryValues="@array/system_region_val"
+            app:key="system_region"
+            app:title="@string/system_region"
+            app:useSimpleSummaryProvider="true" />
     </PreferenceCategory>
     <PreferenceCategory
         android:key="category_presentation"
         android:title="@string/display">
+        <emu.skyline.preference.IntegerListPreference
+            android:defaultValue="6"
+            android:entries="@array/orientation_entries"
+            android:entryValues="@array/orientation_values"
+            app:key="orientation"
+            app:title="@string/screen_orientation"
+            app:useSimpleSummaryProvider="true" />
         <CheckBoxPreference
             android:defaultValue="true"
             android:summaryOff="@string/triple_buffering_disabled"
@@ -109,6 +121,37 @@
             app:key="aspect_ratio"
             app:title="@string/aspect_ratio"
             app:useSimpleSummaryProvider="true" />
+        <CheckBoxPreference
+            android:defaultValue="false"
+            android:summaryOff="@string/respect_display_cutout_disabled"
+            android:summaryOn="@string/respect_display_cutout_enabled"
+            app:key="respect_display_cutout"
+            app:title="@string/respect_display_cutout" />
+        <SeekBarPreference
+            android:min="1"
+            android:defaultValue="6"
+            android:max="16"
+            android:summary="@string/executor_slot_count_desc"
+            app:key="executor_slot_count"
+            app:title="@string/executor_slot_count"
+            app:showSeekBarValue="true" />
+        <CheckBoxPreference
+            android:defaultValue="false"
+            android:summaryOff="@string/enable_texture_readback_hack_disabled"
+            android:summaryOn="@string/enable_texture_readback_hack_enabled"
+            app:key="enable_texture_readback_hack"
+            app:title="@string/enable_texture_readback_hack" />
+    </PreferenceCategory>
+    <PreferenceCategory
+        android:key="category_debug"
+        android:title="@string/debug"
+        app:isPreferenceVisible="false">
+        <CheckBoxPreference
+            android:defaultValue="false"
+            android:summaryOff="@string/validation_layer_disabled"
+            android:summaryOn="@string/validation_layer_enabled"
+            app:key="validation_layer"
+            app:title="@string/validation_layer" />
     </PreferenceCategory>
     <PreferenceCategory
         android:key="category_input"
@@ -122,6 +165,10 @@
         <emu.skyline.preference.ControllerPreference index="5" />
         <emu.skyline.preference.ControllerPreference index="6" />
         <emu.skyline.preference.ControllerPreference index="7" />
+    </PreferenceCategory>
+    <PreferenceCategory
+        android:key="category_credits"
+        android:title="@string/credits">
     </PreferenceCategory>
     <PreferenceCategory
         android:key="category_licenses"
@@ -139,6 +186,18 @@
             app:libraryUrl="https://github.com/Ryujinx/Ryujinx"
             app:summary="@string/ryujinx_description"
             app:title="Ryujinx" />
+        <emu.skyline.preference.LicensePreference
+            app:libraryCopyright="Copyright 2021 yuzu Emulator Project\nCopyright © 2021 Skyline Team and Contributors"
+            app:libraryLicense="@string/mpl2_license"
+            app:libraryUrl="https://github.com/skyline-emu/shader-compiler"
+            app:summary="@string/shader_compiler_description"
+            app:title="yuzu Shader Compiler" />
+        <emu.skyline.preference.LicensePreference
+            app:libraryCopyright="Copyright (c) 2019, sirit\nAll rights reserved."
+            app:libraryLicense="@string/bsd_3_clause_license"
+            app:libraryUrl="https://github.com/ReinUsesLisp/sirit"
+            app:summary="@string/sirit_description"
+            app:title="Sirit" />
         <emu.skyline.preference.LicensePreference
             app:libraryCopyright="Copyright 2015-2020 The Khronos Group Inc."
             app:libraryLicense="@string/apache2_license"
@@ -180,6 +239,12 @@
             app:libraryUrl="https://www.boost.org"
             app:summary="@string/boost_description"
             app:title="Boost" />
+        <emu.skyline.preference.LicensePreference
+            app:libraryCopyright="Copyright Eric Niebler 2019-present"
+            app:libraryLicense="@string/boost_software_license"
+            app:libraryUrl="https://github.com/ericniebler/range-v3"
+            app:summary="@string/rangev3_description"
+            app:title="Range v3" />
         <emu.skyline.preference.LicensePreference
             app:libraryCopyright="Copyright 2016 QuarksLab"
             app:libraryLicense="@string/apache2_license"
@@ -251,20 +316,15 @@
             app:summary="@string/mtico_description"
             app:title="Material Design Icons" />
         <emu.skyline.preference.LicensePreference
-            app:libraryCopyright="Copyright 2020 The Open Sans Project Authors (https://github.com/googlefonts/opensans)"
-            app:libraryLicense="@string/apache2_license"
-            app:libraryUrl="https://fonts.google.com/specimen/Open+Sans"
-            app:summary="@string/open_sans_description"
-            app:title="Open Sans" />
+            app:libraryCopyright="Copyright 2018 The Noto Project Authors (github.com/googlei18n/noto-fonts)"
+            app:libraryLicense="@string/sil_open_font_license"
+            app:libraryUrl="https://github.com/googlefonts/noto-cjk"
+            app:summary="@string/noto_sans_description"
+            app:title="Noto Sans" />
         <emu.skyline.preference.LicensePreference
             app:libraryLicense="@string/apache2_license"
             app:libraryUrl="https://fonts.google.com/specimen/Roboto"
             app:summary="@string/roboto_description"
             app:title="Roboto" />
-        <emu.skyline.preference.LicensePreference
-            app:libraryLicense="@string/sil_open_font_license"
-            app:libraryUrl="https://fonts.google.com/specimen/Source+Sans+Pro"
-            app:summary="@string/source_sans_pro_description"
-            app:title="Source Sans Pro" />
     </PreferenceCategory>
 </androidx.preference.PreferenceScreen>

@@ -24,6 +24,9 @@
     <!-- Settings - Emulator -->
     <string name="emulator">Emulator</string>
     <string name="search_location">Search Location</string>
+    <string name="open_data_directory">View Internal Directory</string>
+    <string name="open_data_directory_summary">Opens Skyline\'s internal directory in a file manager</string>
+    <string name="failed_open_directory">Cannot find an external file manager to open Skyline\'s internal directory</string>
     <string name="theme">Theme</string>
     <string name="layout_type">Game Display Layout</string>
     <string name="select_action">Always Show Game Information</string>
@@ -33,9 +36,9 @@
     <string name="perf_stats_desc_off">Performance Statistics will not be shown</string>
     <string name="perf_stats_desc_on">Performance Statistics will be shown in the top-left corner</string>
     <string name="log_level">Log Level</string>
-    <string name="log_compact">Compact Logs</string>
-    <string name="log_compact_desc_on">Logs will be displayed in a compact form factor</string>
-    <string name="log_compact_desc_off">Logs will be displayed in a verbose form factor</string>
+    <string name="gpu_driver_config">GPU Driver Configuration</string>
+    <string name="gpu_driver_config_desc">Active driver: %1$s</string>
+    <string name="gpu_driver_config_desc_unsupported">Your GPU is not supported</string>
     <!-- Settings - System -->
     <string name="system">System</string>
     <string name="use_docked">Use Docked Mode</string>
@@ -44,6 +47,7 @@
     <string name="username">Username</string>
     <string name="username_default">@string/app_name</string>
     <string name="system_language">System language</string>
+    <string name="system_region">System region</string>
     <!-- Settings - Keys -->
     <string name="keys">Keys</string>
     <string name="prod_keys">Production Keys</string>
@@ -52,16 +56,43 @@
     <string name="import_keys_failed">Failed to import keys</string>
     <!-- Settings - Display -->
     <string name="display">Display</string>
+    <string name="screen_orientation">Screen orientation</string>
     <string name="force_triple_buffering">Force Triple Buffering</string>
     <string name="triple_buffering_enabled">Utilize at least three swapchain buffers (Higher FPS but more input lag)</string>
     <string name="triple_buffering_disabled">Utilize at least two swapchain buffers (Lower FPS but less input lag)</string>
     <string name="disable_frame_throttling">Disable Frame Throttling</string>
-    <string name="disable_frame_throttling_enabled">Game is allowed to submit frames as fast as possible (Only for benchmarking)</string>
+    <string name="disable_frame_throttling_enabled">Game is allowed to submit frames as fast as possible (Only for benchmarking)\n\n<b>Note:</b> An alternative method is utilized to measure the FPS with this enabled, the figures must not be compared to throttled FPS figures</string>
     <string name="disable_frame_throttling_disabled">Only allow the game to submit frames at the display refresh rate</string>
     <string name="max_refresh_rate">Use Maximum Display Refresh Rate</string>
     <string name="max_refresh_rate_enabled">Sets the display refresh rate as high as possible (Will break most games)</string>
     <string name="max_refresh_rate_disabled">Sets the display refresh rate to 60Hz</string>
     <string name="aspect_ratio">Aspect Ratio</string>
+    <string name="respect_display_cutout">Respect Display Cutout</string>
+    <string name="respect_display_cutout_enabled">Do not draw UI elements in the cutout area</string>
+    <string name="respect_display_cutout_disabled">Allow UI elements to be drawn in the cutout area</string>
+    <string name="executor_slot_count">Executor Slot Count</string>
+    <string name="executor_slot_count_desc">Maximum number of simultaneous GPU executions (Higher may sometimes perform better but will use more RAM)</string>
+    <string name="enable_texture_readback_hack">Enable Texture Readback Hack</string>
+    <string name="enable_texture_readback_hack_enabled">Texture readback hack is enabled (Will break some games but others will have higher performance)</string>
+    <string name="enable_texture_readback_hack_disabled">Texture readback hack is disabled (Ensures highest accuracy)</string>
+    <!-- Settings - Debug -->
+    <string name="debug">Debug</string>
+    <string name="validation_layer">Enable validation layer</string>
+    <string name="validation_layer_enabled">The Vulkan validation layer is enabled, major slowdowns are to be expected</string>
+    <string name="validation_layer_disabled">The Vulkan validation layer is disabled</string>
+    <!-- Gpu Driver Activity -->
+    <string name="gpu_driver">GPU Driver</string>
+    <string name="add_gpu_driver">Add a GPU driver</string>
+    <string name="delete_gpu_driver">Delete this GPU driver</string>
+    <string name="system_driver">System Driver</string>
+    <string name="system_driver_desc">The GPU driver provided by your system</string>
+    <string name="gpu_driver_install_inprogress">Installing the GPU driver…</string>
+    <string name="gpu_driver_install_success">GPU driver installed successfully</string>
+    <string name="gpu_driver_install_invalid_archive">Failed to unzip the provided driver package</string>
+    <string name="gpu_driver_install_missing_metadata">The supplied driver package is invalid due to missing metadata</string>
+    <string name="gpu_driver_install_invalid_metadata">The supplied driver package contains invalid metadata, it may be corrupted</string>
+    <string name="gpu_driver_install_unsupported_android_version">Your device doesn\'t meet the minimum Android version requirements for the supplied driver</string>
+    <string name="gpu_driver_install_already_installed">The supplied driver package is already installled</string>
     <!-- Input -->
     <string name="input">Input</string>
     <string name="osc">On-Screen Controls</string>
@@ -69,6 +100,8 @@
     <string name="osc_not_shown">On-Screen Controls won\'t be shown</string>
     <string name="osc_shown">On-Screen Controls will be shown</string>
     <string name="osc_edit">Edit On-Screen Controls layout</string>
+    <string name="setup_guide">Setup Guide</string>
+    <string name="setup_guide_description">Sequentially map every stick and button</string>
     <string name="joystick">Joystick</string>
     <string name="confirm">Confirm</string>
     <string name="cancel">Cancel</string>
@@ -128,10 +161,14 @@
     <string name="shoulder_trigger"><![CDATA[Shoulder & Trigger Buttons]]></string>
     <string name="shoulder_rail">Shoulder Buttons on Joy-Con Rail</string>
     <string name="misc_buttons">Miscellaneous Buttons</string>
+    <!-- Credits -->
+    <string name="credits">Credits</string>
     <!-- Licenses -->
     <string name="licenses">Licenses</string>
     <string name="skyline_license_description">Skyline is licensed under Mozilla Public License 2.0</string>
     <string name="ryujinx_description">Ryujinx has been used for reference throughout the project due to their highly accurate implementations\n\n<b>Note: Skyline is not based on Ryujinx</b></string>
+    <string name="shader_compiler_description">Skyline\'s shader compiler is a <b>fork</b> of <i>yuzu</i>\'s shader compiler with Skyline-specific changes while other changes are shared between them allowing both projects to benefit from the development of it\n\n<b>Note:</b> Using it in Skyline is only possible due to the licensing exemption granted to Skyline by the <i>yuzu</i> team</string>
+    <string name="sirit_description">Skyline\'s shader compiler internally uses Sirit to emit SPIR-V in an efficient manner</string>
     <string name="vkhpp_description">Vulkan-Hpp provides a C++ API for Vulkan</string>
     <string name="vkma_description">Vulkan Memory Allocator provides a high-quality GPU memory allocator with UMA support</string>
     <string name="khvkval_description">Khronos\'s Vulkan Validation Layer provides error-checking for Vulkan API calls in debug builds</string>
@@ -139,6 +176,7 @@
     <string name="perfetto_description">Perfetto is used to profile and debug with detailed tracing</string>
     <string name="fmtlib_description">{fmt} provides a modern C++ string formatting API</string>
     <string name="boost_description">Boost provides high-quality implementations of containers and other convenience functions in C++</string>
+    <string name="rangev3_description">Range v3 is a reference implementation of ISO C++ 20 ranges, this allows us to use ranges while they are developed in LLVM\'s libc++</string>
     <string name="frozen_description">Frozen provides compile-time immutable hash maps with a perfect hash function for faster lookups</string>
     <string name="pugixml_description">pugixml is used to parse the preference XML to retrieve settings from C++</string>
     <string name="opus_description">Opus Audio Codec provides a high-quality Opus decoder used to decode Opus-encoded audio provided by the guest</string>
@@ -151,10 +189,12 @@
     <string name="ktstd_description">Kotlin Standard Library provides convenience functions in Kotlin</string>
     <string name="dagger_description">Dagger provides a framework for compile-time dependency injection</string>
     <string name="mtico_description">Material Design Icons provides consistent iconography throughout the application</string>
-    <string name="open_sans_description">Open Sans is used as our FOSS shared font replacement for Latin, Korean and Chinese</string>
-    <string name="roboto_description">Roboto is used as our FOSS shared font replacement for Nintendo\'s extended character set</string>
-    <string name="source_sans_pro_description">Source Sans Pro is used as our FOSS shared font replacement for Nintendo\'s extended Chinese character set</string>
+    <string name="noto_sans_description">Noto Sans is used as our FOSS shared font replacement for Latin, Japanese and (Traditional) Chinese</string>
+    <string name="roboto_description">Roboto is used as our FOSS shared font replacement for Korean and Nintendo\'s extended character set</string>
+    <!-- Software Keyboard -->
+    <string name="input_hint">Input Text</string>
     <!-- Misc -->
     <!--suppress AndroidLintUnusedResources -->
     <string name="expand_button_title" tools:override="true">Expand</string>
+    <string name="undo">Undo</string>
 </resources>

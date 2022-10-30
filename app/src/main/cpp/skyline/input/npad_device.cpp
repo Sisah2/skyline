@@ -10,7 +10,14 @@ namespace skyline::input {
         : manager(manager),
           section(section),
           id(id),
-          updateEvent(std::make_shared<kernel::type::KEvent>(manager.state, false)) {}
+          updateEvent(std::make_shared<kernel::type::KEvent>(manager.state, false)) {
+        constexpr std::size_t InitializeEntryCount{19}; //!< HW initializes the first 19 entries
+
+        ResetDeviceProperties();
+        for (std::size_t i{}; i < InitializeEntryCount; ++i) {
+            WriteEmptyEntries();
+        }
+    }
 
     void NpadDevice::Connect(NpadControllerType newType) {
         if (type == newType) {
@@ -29,10 +36,11 @@ namespace skyline::input {
             return;
         }
 
-        section = {};
+        ResetDeviceProperties();
         controllerInfo = nullptr;
 
-        connectionState = {.connected = true};
+        connectionState.raw = 0;
+        connectionState.connected = true;
 
         switch (newType) {
             case NpadControllerType::ProController:
@@ -134,7 +142,7 @@ namespace skyline::input {
                 section.header.singleColorStatus = NpadColorReadStatus::Success; // Single color is also written for dual controllers
                 section.header.singleColor = section.header.leftColor;           // and is set to the color of the left JC
                 break;
-
+            case NpadControllerType::Gamecube:
             case NpadControllerType::None:
                 break;
         }
@@ -146,10 +154,7 @@ namespace skyline::input {
         type = newType;
         controllerInfo = &GetControllerInfo();
 
-        GetNextEntry(*controllerInfo);
-        GetNextEntry(section.defaultController);
-        globalTimestamp++;
-
+        UpdateSharedMemory();
         updateEvent->Signal();
     }
 
@@ -157,8 +162,7 @@ namespace skyline::input {
         if (type == NpadControllerType::None)
             return;
 
-        section = {};
-        globalTimestamp = 0;
+        ResetDeviceProperties();
 
         index = -1;
         partnerIndex = -1;
@@ -167,6 +171,7 @@ namespace skyline::input {
         controllerInfo = nullptr;
 
         updateEvent->Signal();
+        WriteEmptyEntries();
     }
 
     NpadControllerInfo &NpadDevice::GetControllerInfo() {
@@ -186,38 +191,72 @@ namespace skyline::input {
         }
     }
 
-    NpadControllerState &NpadDevice::GetNextEntry(NpadControllerInfo &info) {
+    void NpadDevice::WriteNextEntry(NpadControllerInfo &info, NpadControllerState entry) {
         auto &lastEntry{info.state.at(info.header.currentEntry)};
 
         info.header.timestamp = util::GetTimeTicks();
         info.header.entryCount = std::min(static_cast<u8>(info.header.entryCount + 1), constant::HidEntryCount);
-        info.header.maxEntry = info.header.entryCount;
-        info.header.currentEntry = (info.header.currentEntry != constant::HidEntryCount - 1) ? info.header.currentEntry + 1 : 0;
+        info.header.maxEntry = info.header.entryCount - 1;
+        info.header.currentEntry = (info.header.currentEntry < info.header.maxEntry) ? info.header.currentEntry + 1 : 0;
 
-        auto &entry{info.state.at(info.header.currentEntry)};
+        auto &nextEntry{info.state.at(info.header.currentEntry)};
 
-        entry.globalTimestamp = globalTimestamp;
-        entry.localTimestamp = lastEntry.localTimestamp + 1;
-        entry.buttons = lastEntry.buttons;
-        entry.leftX = lastEntry.leftX;
-        entry.leftY = lastEntry.leftY;
-        entry.rightX = lastEntry.rightX;
-        entry.rightY = lastEntry.rightY;
-        entry.status.raw = connectionState.raw;
-
-        return entry;
+        nextEntry.globalTimestamp = globalTimestamp;
+        nextEntry.localTimestamp = lastEntry.localTimestamp + 1;
+        nextEntry.buttons = entry.buttons;
+        nextEntry.leftX = entry.leftX;
+        nextEntry.leftY = entry.leftY;
+        nextEntry.rightX = entry.rightX;
+        nextEntry.rightY = entry.rightY;
+        nextEntry.status.raw = connectionState.raw;
     }
 
-    void NpadDevice::SetButtonState(NpadButton mask, bool pressed) {
+    void NpadDevice::WriteEmptyEntries() {
+        NpadControllerState emptyEntry{};
+
+        WriteNextEntry(section.fullKeyController, emptyEntry);
+        WriteNextEntry(section.handheldController, emptyEntry);
+        WriteNextEntry(section.leftController, emptyEntry);
+        WriteNextEntry(section.rightController, emptyEntry);
+        WriteNextEntry(section.palmaController, emptyEntry);
+        WriteNextEntry(section.dualController, emptyEntry);
+        WriteNextEntry(section.defaultController, emptyEntry);
+
+        globalTimestamp++;
+    }
+
+    void NpadDevice::ResetDeviceProperties() {
+        // Don't reset assignment mode or ring lifo entries these values are persistent
+        section.header.type = NpadControllerType::None;
+        section.header.singleColor = {};
+        section.header.leftColor = {};
+        section.header.rightColor = {};
+        section.header.singleColorStatus =  NpadColorReadStatus::Disconnected;
+        section.header.dualColorStatus = NpadColorReadStatus::Disconnected;
+        section.deviceType.raw = 0;
+        section.buttonProperties.raw = 0;
+        section.systemProperties.raw = 0;
+        section.singleBatteryLevel = NpadBatteryLevel::Empty;
+        section.leftBatteryLevel = NpadBatteryLevel::Empty;
+        section.rightBatteryLevel = NpadBatteryLevel::Empty;
+    }
+
+    void NpadDevice::UpdateSharedMemory() {
         if (!connectionState.connected)
             return;
 
-        auto &entry{GetNextEntry(*controllerInfo)};
+        if (controllerInfo)
+            WriteNextEntry(*controllerInfo, controllerState);
+        WriteNextEntry(section.defaultController, defaultState);
 
+        globalTimestamp++;
+    }
+
+    void NpadDevice::SetButtonState(NpadButton mask, bool pressed) {
         if (pressed)
-            entry.buttons.raw |= mask.raw;
+            controllerState.buttons.raw |= mask.raw;
         else
-            entry.buttons.raw &= ~mask.raw;
+            controllerState.buttons.raw &= ~mask.raw;
 
         if (manager.orientation == NpadJoyOrientation::Horizontal && (type == NpadControllerType::JoyconLeft || type == NpadControllerType::JoyconRight)) {
             NpadButton orientedMask{};
@@ -252,109 +291,98 @@ namespace skyline::input {
             mask = orientedMask;
         }
 
-        auto &defaultEntry{GetNextEntry(section.defaultController)};
         if (pressed)
-            defaultEntry.buttons.raw |= mask.raw;
+            defaultState.buttons.raw |= mask.raw;
         else
-            defaultEntry.buttons.raw &= ~mask.raw;
-
-        globalTimestamp++;
+            defaultState.buttons.raw &= ~mask.raw;
     }
 
     void NpadDevice::SetAxisValue(NpadAxisId axis, i32 value) {
-        if (!connectionState.connected)
-            return;
-
-        auto &controllerEntry{GetNextEntry(*controllerInfo)};
-        auto &defaultEntry{GetNextEntry(section.defaultController)};
-
         constexpr i16 threshold{std::numeric_limits<i16>::max() / 2}; // A 50% deadzone for the stick buttons
 
         if (manager.orientation == NpadJoyOrientation::Vertical || (type != NpadControllerType::JoyconLeft && type != NpadControllerType::JoyconRight)) {
             switch (axis) {
                 case NpadAxisId::LX:
-                    controllerEntry.leftX = value;
-                    defaultEntry.leftX = value;
+                    controllerState.leftX = value;
+                    defaultState.leftX = value;
 
-                    controllerEntry.buttons.leftStickLeft = controllerEntry.leftX <= -threshold;
-                    defaultEntry.buttons.leftStickLeft = controllerEntry.buttons.leftStickLeft;
+                    controllerState.buttons.leftStickLeft = controllerState.leftX <= -threshold;
+                    defaultState.buttons.leftStickLeft = controllerState.buttons.leftStickLeft;
 
-                    controllerEntry.buttons.leftStickRight = controllerEntry.leftX >= threshold;
-                    defaultEntry.buttons.leftStickRight = controllerEntry.buttons.leftStickRight;
+                    controllerState.buttons.leftStickRight = controllerState.leftX >= threshold;
+                    defaultState.buttons.leftStickRight = controllerState.buttons.leftStickRight;
                     break;
                 case NpadAxisId::LY:
-                    controllerEntry.leftY = value;
-                    defaultEntry.leftY = value;
+                    controllerState.leftY = value;
+                    defaultState.leftY = value;
 
-                    defaultEntry.buttons.leftStickUp = controllerEntry.buttons.leftStickUp;
-                    controllerEntry.buttons.leftStickUp = controllerEntry.leftY >= threshold;
+                    defaultState.buttons.leftStickUp = controllerState.buttons.leftStickUp;
+                    controllerState.buttons.leftStickUp = controllerState.leftY >= threshold;
 
-                    controllerEntry.buttons.leftStickDown = controllerEntry.leftY <= -threshold;
-                    defaultEntry.buttons.leftStickDown = controllerEntry.buttons.leftStickDown;
+                    controllerState.buttons.leftStickDown = controllerState.leftY <= -threshold;
+                    defaultState.buttons.leftStickDown = controllerState.buttons.leftStickDown;
                     break;
                 case NpadAxisId::RX:
-                    controllerEntry.rightX = value;
-                    defaultEntry.rightX = value;
+                    controllerState.rightX = value;
+                    defaultState.rightX = value;
 
-                    controllerEntry.buttons.rightStickLeft = controllerEntry.rightX <= -threshold;
-                    defaultEntry.buttons.rightStickLeft = controllerEntry.buttons.rightStickLeft;
+                    controllerState.buttons.rightStickLeft = controllerState.rightX <= -threshold;
+                    defaultState.buttons.rightStickLeft = controllerState.buttons.rightStickLeft;
 
-                    controllerEntry.buttons.rightStickRight = controllerEntry.rightX >= threshold;
-                    defaultEntry.buttons.rightStickRight = controllerEntry.buttons.rightStickRight;
+                    controllerState.buttons.rightStickRight = controllerState.rightX >= threshold;
+                    defaultState.buttons.rightStickRight = controllerState.buttons.rightStickRight;
                     break;
                 case NpadAxisId::RY:
-                    controllerEntry.rightY = value;
-                    defaultEntry.rightY = value;
+                    controllerState.rightY = value;
+                    defaultState.rightY = value;
 
-                    controllerEntry.buttons.rightStickUp = controllerEntry.rightY >= threshold;
-                    defaultEntry.buttons.rightStickUp = controllerEntry.buttons.rightStickUp;
+                    controllerState.buttons.rightStickUp = controllerState.rightY >= threshold;
+                    defaultState.buttons.rightStickUp = controllerState.buttons.rightStickUp;
 
-                    controllerEntry.buttons.rightStickDown = controllerEntry.rightY <= -threshold;
-                    defaultEntry.buttons.rightStickDown = controllerEntry.buttons.rightStickDown;
+                    controllerState.buttons.rightStickDown = controllerState.rightY <= -threshold;
+                    defaultState.buttons.rightStickDown = controllerState.buttons.rightStickDown;
                     break;
             }
         } else {
             switch (axis) {
                 case NpadAxisId::LX:
-                    controllerEntry.leftY = value;
-                    controllerEntry.buttons.leftStickUp = controllerEntry.leftY >= threshold;
-                    controllerEntry.buttons.leftStickDown = controllerEntry.leftY <= -threshold;
+                    controllerState.leftY = value;
+                    controllerState.buttons.leftStickUp = controllerState.leftY >= threshold;
+                    controllerState.buttons.leftStickDown = controllerState.leftY <= -threshold;
 
-                    defaultEntry.leftX = value;
-                    defaultEntry.buttons.leftStickLeft = defaultEntry.leftX <= -threshold;
-                    defaultEntry.buttons.leftStickRight = defaultEntry.leftX >= threshold;
+                    defaultState.leftX = value;
+                    defaultState.buttons.leftStickLeft = defaultState.leftX <= -threshold;
+                    defaultState.buttons.leftStickRight = defaultState.leftX >= threshold;
                     break;
                 case NpadAxisId::LY:
-                    controllerEntry.leftX = -value;
-                    controllerEntry.buttons.leftStickLeft = controllerEntry.leftX <= -threshold;
-                    controllerEntry.buttons.leftStickRight = controllerEntry.leftX >= threshold;
+                    controllerState.leftX = -value;
+                    controllerState.buttons.leftStickLeft = controllerState.leftX <= -threshold;
+                    controllerState.buttons.leftStickRight = controllerState.leftX >= threshold;
 
-                    defaultEntry.leftY = value;
-                    defaultEntry.buttons.leftStickUp = defaultEntry.leftY >= threshold;
-                    defaultEntry.buttons.leftStickDown = defaultEntry.leftY <= -threshold;
+                    defaultState.leftY = value;
+                    defaultState.buttons.leftStickUp = defaultState.leftY >= threshold;
+                    defaultState.buttons.leftStickDown = defaultState.leftY <= -threshold;
                     break;
                 case NpadAxisId::RX:
-                    controllerEntry.rightY = value;
-                    controllerEntry.buttons.rightStickUp = controllerEntry.rightY >= threshold;
-                    controllerEntry.buttons.rightStickDown = controllerEntry.rightY <= -threshold;
+                    controllerState.rightY = value;
+                    controllerState.buttons.rightStickUp = controllerState.rightY >= threshold;
+                    controllerState.buttons.rightStickDown = controllerState.rightY <= -threshold;
 
-                    defaultEntry.rightX = value;
-                    defaultEntry.buttons.rightStickLeft = defaultEntry.rightX <= -threshold;
-                    defaultEntry.buttons.rightStickRight = defaultEntry.rightX >= threshold;
+                    defaultState.rightX = value;
+                    defaultState.buttons.rightStickLeft = defaultState.rightX <= -threshold;
+                    defaultState.buttons.rightStickRight = defaultState.rightX >= threshold;
                     break;
                 case NpadAxisId::RY:
-                    controllerEntry.rightX = -value;
-                    controllerEntry.buttons.rightStickLeft = controllerEntry.rightX <= -threshold;
-                    controllerEntry.buttons.rightStickRight = controllerEntry.rightX >= threshold;
+                    controllerState.rightX = -value;
+                    controllerState.buttons.rightStickLeft = controllerState.rightX <= -threshold;
+                    controllerState.buttons.rightStickRight = controllerState.rightX >= threshold;
 
-                    defaultEntry.rightY = value;
-                    defaultEntry.buttons.rightStickUp = defaultEntry.rightY >= threshold;
-                    defaultEntry.buttons.rightStickDown = defaultEntry.rightY <= -threshold;
+                    defaultState.rightY = value;
+                    defaultState.buttons.rightStickUp = defaultState.rightY >= threshold;
+                    defaultState.buttons.rightStickDown = defaultState.rightY <= -threshold;
                     break;
             }
         }
-
-        globalTimestamp++;
     }
 
     constexpr jlong MsInSecond{1000}; //!< The amount of milliseconds in a single second of time

@@ -3,13 +3,23 @@
 
 #pragma once
 
+#include <algorithm>
 #include <random>
 #include <span>
 #include <frozen/unordered_map.h>
 #include <frozen/string.h>
+#include <type_traits>
+#include <xxhash.h>
 #include "base.h"
+#include "exception.h"
 
 namespace skyline::util {
+    /**
+     * @brief Concept for any trivial non-container type
+     */
+    template<typename T>
+    concept TrivialObject = std::is_trivially_copyable_v<T> && !requires(T v) { v.data(); };
+
     /**
      * @brief Returns the current time in nanoseconds
      * @return The current time in nanoseconds
@@ -19,7 +29,7 @@ namespace skyline::util {
         //asm("MRS %0, CNTFRQ_EL0" : "=r"(frequency));
         constexpr u64 frequency{25600000};
         u64 ticks;
-        asm("MRS %0, CNTVCT_EL0" : "=r"(ticks));
+        asm volatile("MRS %0, CNTVCT_EL0" : "=r"(ticks));
         return static_cast<i64>(((ticks / frequency) * constant::NsInSecond) + (((ticks % frequency) * constant::NsInSecond + (frequency / 2)) / frequency));
     }
 
@@ -29,7 +39,7 @@ namespace skyline::util {
      */
     inline u64 GetTimeTicks() {
         u64 ticks;
-        asm("MRS %0, CNTVCT_EL0" : "=r"(ticks));
+        asm volatile("MRS %0, CNTVCT_EL0" : "=r"(ticks));
         return ticks;
     }
 
@@ -62,7 +72,7 @@ namespace skyline::util {
 
     /**
      * @return The value aligned up to the next multiple
-     * @note The multiple needs to be a power of 2
+     * @note The multiple **must** be a power of 2
      */
     template<typename TypeVal>
     requires IsPointerOrUnsignedIntegral<TypeVal>
@@ -72,8 +82,19 @@ namespace skyline::util {
     }
 
     /**
+     * @return The value aligned up to the next multiple, the multiple is not restricted to being a power of two (NPOT)
+     * @note This will round away from zero for negative numbers
+     * @note This is costlier to compute than the power of 2 version, it should be preferred over this when possible
+     */
+    template<typename TypeVal>
+    requires std::is_integral_v<TypeVal> || std::is_pointer_v<TypeVal>
+    constexpr TypeVal AlignUpNpot(TypeVal value, ssize_t multiple) {
+        return ValuePointer<TypeVal>(((PointerValue(value) + multiple - 1) / multiple) * multiple);
+    }
+
+    /**
      * @return The value aligned down to the previous multiple
-     * @note The multiple needs to be a power of 2
+     * @note The multiple **must** be a power of 2
      */
     template<typename TypeVal>
     requires IsPointerOrUnsignedIntegral<TypeVal>
@@ -96,13 +117,22 @@ namespace skyline::util {
     template<typename TypeVal>
     requires IsPointerOrUnsignedIntegral<TypeVal>
     constexpr bool IsPageAligned(TypeVal value) {
-        return IsAligned(value, PAGE_SIZE);
+        return IsAligned(value, constant::PageSize);
     }
 
     template<typename TypeVal>
     requires IsPointerOrUnsignedIntegral<TypeVal>
     constexpr bool IsWordAligned(TypeVal value) {
         return IsAligned(value, WORD_BIT / 8);
+    }
+
+    /**
+     * @return The value of division rounded up to the next integral
+     */
+    template<typename Type>
+    requires std::is_integral_v<Type>
+    constexpr Type DivideCeil(Type dividend, Type divisor) {
+        return (dividend + divisor - 1) / divisor;
     }
 
     /**
@@ -192,6 +222,16 @@ namespace skyline::util {
     }
 
     /**
+     * @brief A fast hash for any trivial object that is designed to be utilized with hash-based containers
+     */
+    template<typename T> requires std::is_trivial_v<T>
+    struct ObjectHash {
+        size_t operator()(const T &object) const noexcept {
+            return XXH64(&object, sizeof(object), 0);
+        }
+    };
+
+    /**
      * @brief Selects the largest possible integer type for representing an object alongside providing the size of the object in terms of the underlying type
      */
     template<class T>
@@ -216,12 +256,11 @@ namespace skyline::util {
     template<typename T>
     requires std::is_integral_v<T>
     void FillRandomBytes(std::span<T> in) {
-        std::independent_bits_engine<std::mt19937_64, std::numeric_limits<T>::digits, T> gen(detail::generator);
-        std::generate(in.begin(), in.end(), gen);
+        std::uniform_int_distribution<u64> dist(std::numeric_limits<T>::min(), std::numeric_limits<T>::max());
+        std::generate(in.begin(), in.end(), [&]() { return dist(detail::generator); });
     }
 
-    template<class T>
-    requires (!std::is_integral_v<T> && std::is_trivially_copyable_v<T>)
+    template<TrivialObject T>
     void FillRandomBytes(T &object) {
         FillRandomBytes(std::span(reinterpret_cast<typename IntegerFor<T>::Type *>(&object), IntegerFor<T>::Count));
     }
@@ -250,8 +289,12 @@ namespace skyline::util {
             return *this;
         }
 
-        auto operator[](std::size_t index) {
+        const auto &operator[](std::size_t index) const {
             return value[index];
+        }
+
+        const ValueType &operator*() const {
+            return value;
         }
 
         ValueType &operator*() {
@@ -264,13 +307,51 @@ namespace skyline::util {
     };
 
     template<typename T, typename... TArgs, size_t... Is>
-    std::array<T, sizeof...(Is)> MakeFilledArray(std::index_sequence<Is...>, TArgs &&... args)
-    {
+    std::array<T, sizeof...(Is)> MakeFilledArray(std::index_sequence<Is...>, TArgs &&... args) {
         return {(void(Is), T(args...))...};
     }
 
     template<typename T, size_t Size, typename... TArgs>
     std::array<T, Size> MakeFilledArray(TArgs &&... args) {
         return MakeFilledArray<T>(std::make_index_sequence<Size>(), std::forward<TArgs>(args)...);
+    }
+
+    template<typename T>
+    struct IncrementingT {
+        using Type = T;
+    };
+
+
+    template<typename T>
+    struct IsIncrementingT : std::false_type {};
+
+    template<typename T>
+    struct IsIncrementingT<IncrementingT<T>> : std::true_type {};
+
+    template<typename T, size_t Index, typename... TSrcs>
+    T MakeMergeElem(TSrcs &&... srcs) {
+        auto readElem{[index = Index](auto &&src) -> decltype(auto) {
+            using SrcType = std::decay_t<decltype(src)>;
+            if constexpr (requires { src[Index]; })
+                return src[Index];
+            else if constexpr (IsIncrementingT<SrcType>{})
+                return static_cast<typename SrcType::Type>(index);
+            else
+                return src;
+        }};
+        return T{readElem(std::forward<TSrcs>(srcs))...};
+    }
+
+    template<typename T, size_t... Is, typename... TSrcs>
+    std::array<T, sizeof...(Is)> MergeInto(std::index_sequence<Is...> seq, TSrcs &&... srcs) {
+        return {MakeMergeElem<T, Is>(std::forward<TSrcs>(srcs)...)...};
+    }
+
+    /**
+     * @brief Constructs {{scalar0, array0[0], array1[0], ... arrayN[0], scalar1}, {scalar0, array0[1], array1[1]. ... arrayN[1], scalar0}, ...}
+     */
+    template<typename T, size_t Size, typename... TSrcs>
+    std::array<T, Size> MergeInto(TSrcs &&... srcs) {
+        return MergeInto<T>(std::make_index_sequence<Size>(), std::forward<TSrcs>(srcs)...);
     }
 }
