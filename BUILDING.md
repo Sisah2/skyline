@@ -1,4 +1,4 @@
-# Building Guide
+#  Building Guide
 
 ### Software needed
 * [Git](https://git-scm.com/download)
@@ -25,7 +25,7 @@ git clone https://github.com/skyline-emu/skyline.git --recursive
 ```
 
 Open Android Studio
-<details><summary><i>First time users only</i></summary>
+<details><summary><i>First-time users only</i></summary>
 <p>
 
 > If you opened Android Studio for the first time, choose the `Standard` install type and complete the setup wizard leaving all settings to their default value.
@@ -100,6 +100,14 @@ cmake.dir=<path-to-cmake-folder>
 E.g. on Windows:
 ```properties
 cmake.dir=C\:\\Users\\skyline\\AppData\\Local\\Android\\Sdk\\cmake\\3.18.1
+```
+
+* `NDK not configured` even if you have followed the steps above.
+
+Put path to the NDK in `ndk.dir` property of `local.properties` file, eg.:
+
+```properties
+ndk.dir=/home/skyline/opt/android-sdk/ndk/25.0.8221429
 ```
 
 * `'shader_compiler/*.h' file not found`
