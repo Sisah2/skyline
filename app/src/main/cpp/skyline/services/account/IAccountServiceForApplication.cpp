@@ -101,7 +101,8 @@ namespace skyline::service::account {
 
     Result IAccountServiceForApplication::InitializeApplicationInfoV2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         return {};
-
+    }
+    
     Result IAccountServiceForApplication::ListOpenContextStoredUsers(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         try {
             return WriteUserList(request.outputBuf.at(0), {constant::DefaultUserId});
@@ -109,7 +110,7 @@ namespace skyline::service::account {
             return result::InvalidInputBuffer;
         }
     }
-
+    
     Result IAccountServiceForApplication::IsUserRegistrationRequestPermitted(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         response.Push<u8>(false); // Registration isn't permitted via the application account service
         return {};
