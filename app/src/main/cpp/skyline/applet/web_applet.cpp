@@ -6,7 +6,7 @@
 #include <input/npad.h>
 #include <services/applet/common_arguments.h>
 #include <services/am/storage/ObjIStorage.h>
-#include "offline_web_applet.h"
+#include "web_applet.h"
 
 namespace skyline::applet {
     WebApplet::WebApplet(const DeviceState &state,
