@@ -261,6 +261,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         auto[blockMapping, blockOffset]{ctx.channelCtx.asCtx->gmmu.LookupBlock(engine->programRegion + engine->pipeline.programOffset)};
 
+        if (!trapExecutionLock)
+            trapExecutionLock.emplace(trapMutex);
+
         // Skip looking up the mirror if it is the same as the one used for the previous update
         if (!mirrorBlock.valid() || !mirrorBlock.contains(blockMapping)) {
             auto mirrorIt{mirrorMap.find(blockMapping.data())};
@@ -272,11 +275,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 auto trapHandle{ctx.nce.CreateTrap(blockMapping, [mutex = &trapMutex]() {
                     std::scoped_lock lock{*mutex};
                     return;
-                }, []() { return true; }, [dirty = &newIt.first->second->dirty, mutex = &trapMutex]() {
+                }, []() { return true; }, [entry = newIt.first->second.get(), mutex = &trapMutex]() {
                     std::unique_lock lock{*mutex, std::try_to_lock};
                     if (!lock)
                         return false;
-                    *dirty = true;
+                    entry->dirty = true;
+                    entry->trapCount++;
                     return true;
                 })};
 
@@ -292,11 +296,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
             mirrorBlock = blockMapping;
         }
 
-        if (!trapExecutionLock)
-            trapExecutionLock.emplace(trapMutex);
+
+        if (entry->trapCount > MirrorEntry::SkipTrapThreshold && entry->executionNumber != ctx.executor.executionNumber) {
+            // Upon entering a new execution, assume memory may have been modified externally so clear our cache to force rehashes
+            entry->executionNumber = ctx.executor.executionNumber;
+            entry->cache.clear();
+        }
 
         // If the mirror entry has been written to, clear its shader binary cache and retrap to catch any future writes
-        if (entry->dirty) {
+        if (entry->dirty && entry->trapCount < MirrorEntry::SkipTrapThreshold) {
             entry->cache.clear();
             entry->dirty = false;
             ctx.nce.TrapRegions(*entry->trap, true);
