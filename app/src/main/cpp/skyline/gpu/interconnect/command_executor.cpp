@@ -7,12 +7,13 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <nce.h>
 
 namespace skyline::gpu::interconnect {
     CommandRecordThread::CommandRecordThread(const DeviceState &state)
         : state{state},
-          incoming{*state.settings->executorSlotCount},
-          outgoing{*state.settings->executorSlotCount},
+          incoming{1U << *state.settings->executorSlotCountScale},
+          outgoing{1U << *state.settings->executorSlotCountScale},
           thread{&CommandRecordThread::Run, this} {}
 
     CommandRecordThread::Slot::ScopedBegin::ScopedBegin(CommandRecordThread::Slot &slot) : slot{slot} {}
@@ -54,8 +55,13 @@ namespace skyline::gpu::interconnect {
           ready{other.ready} {}
 
     std::shared_ptr<FenceCycle> CommandRecordThread::Slot::Reset(GPU &gpu) {
+        auto startTime{util::GetTimeNs()};
+
         cycle->Wait();
         cycle = std::make_shared<FenceCycle>(*cycle);
+        if (util::GetTimeNs() - startTime > GrowThresholdNs)
+            didWait = true;
+
         // Command buffer doesn't need to be reset since that's done implicitly by begin
         return cycle;
     }
@@ -125,10 +131,7 @@ namespace skyline::gpu::interconnect {
                 Logger::Warn("Failed to intialise RenderDoc API: {}", ret);
         }
 
-        std::vector<Slot> slots{};
-        std::generate_n(std::back_inserter(slots), *state.settings->executorSlotCount, [&] () -> Slot { return gpu; });
-
-        outgoing.AppendTranform(span<Slot>(slots), [](auto &slot) { return &slot; });
+        outgoing.Push(&slots.emplace_back(gpu));
 
         if (int result{pthread_setname_np(pthread_self(), "Sky-CmdRecord")})
             Logger::Warn("Failed to set the thread name: {}", strerror(result));
@@ -146,6 +149,11 @@ namespace skyline::gpu::interconnect {
                 if (renderDocApi && slot->capture)
                     renderDocApi->EndFrameCapture(RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE(instance), nullptr);
                 slot->capture = false;
+
+                if (slot->didWait && slots.size() < (1U << *state.settings->executorSlotCountScale)) {
+                    outgoing.Push(&slots.emplace_back(gpu));
+                    slot->didWait = false;
+                }
 
                 outgoing.Push(slot);
             }, [] {});
@@ -165,7 +173,12 @@ namespace skyline::gpu::interconnect {
     }
 
     CommandRecordThread::Slot *CommandRecordThread::AcquireSlot() {
-        return outgoing.Pop();
+        auto startTime{util::GetTimeNs()};
+        auto slot{outgoing.Pop()};
+        if (util::GetTimeNs() - startTime > GrowThresholdNs)
+            slot->didWait = true;
+
+        return slot;
     }
 
     void CommandRecordThread::ReleaseSlot(Slot *slot) {
@@ -472,7 +485,7 @@ namespace skyline::gpu::interconnect {
         renderPassIndex = 0;
 
         // Periodically clear preserve attachments just in case there are new waiters which would otherwise end up waiting forever
-        if ((submissionNumber % (*state.settings->executorSlotCount * 2)) == 0) {
+        if ((submissionNumber % (2U << *state.settings->executorSlotCountScale)) == 0) {
             preserveAttachedBuffers.clear();
             preserveAttachedTextures.clear();
         }
