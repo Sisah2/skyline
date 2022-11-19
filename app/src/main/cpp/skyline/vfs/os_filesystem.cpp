@@ -38,6 +38,11 @@ namespace skyline::vfs {
         return true;
     }
 
+    void OsFileSystem::DeleteFileImpl(const std::string &path) {
+        auto fullPath{basePath + path};
+        remove(fullPath.c_str());
+    }
+
     bool OsFileSystem::CreateDirectoryImpl(const std::string &path, bool parents) {
         auto fullPath{basePath + path + "/"};
 
@@ -84,7 +89,12 @@ namespace skyline::vfs {
     }
 
     std::shared_ptr<Directory> OsFileSystem::OpenDirectoryImpl(const std::string &path, Directory::ListMode listMode) {
-        return std::make_shared<OsFileSystemDirectory>(basePath + path, listMode);
+        struct dirent *entry;
+        auto directory{opendir((basePath + path).c_str())};
+        if (!directory)
+            return nullptr;
+        else
+            return std::make_shared<OsFileSystemDirectory>(basePath + path, listMode);
     }
 
     OsFileSystemDirectory::OsFileSystemDirectory(std::string path, Directory::ListMode listMode) : Directory(listMode), path(std::move(path)) {}
