@@ -41,6 +41,7 @@ namespace skyline {
             gpuDriverLibraryName = ktSettings.GetString("gpuDriverLibraryName");
             executorSlotCount = ktSettings.GetInt<u32>("executorSlotCount");
             enableFastGpuReadbackHack = ktSettings.GetBool("enableFastGpuReadbackHack");
+            isAudioOutputDisabled = ktSettings.GetBool("isAudioOutputDisabled");
             validationLayer = ktSettings.GetBool("validationLayer");
         };
     };
