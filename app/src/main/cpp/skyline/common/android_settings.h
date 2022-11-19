@@ -39,7 +39,7 @@ namespace skyline {
             disableFrameThrottling = ktSettings.GetBool("disableFrameThrottling");
             gpuDriver = ktSettings.GetString("gpuDriver");
             gpuDriverLibraryName = ktSettings.GetString("gpuDriverLibraryName");
-            executorSlotCount = ktSettings.GetInt<u32>("executorSlotCount");
+            executorSlotCountScale = ktSettings.GetInt<u32>("executorSlotCountScale");
             enableFastGpuReadbackHack = ktSettings.GetBool("enableFastGpuReadbackHack");
             validationLayer = ktSettings.GetBool("validationLayer");
         };
