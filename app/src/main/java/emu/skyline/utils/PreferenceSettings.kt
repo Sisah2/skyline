@@ -38,8 +38,10 @@ class PreferenceSettings @Inject constructor(@ApplicationContext private val con
 
     // GPU
     var gpuDriver by sharedPreferences(context, SYSTEM_GPU_DRIVER)
-    var executorSlotCount by sharedPreferences(context, 6)
-    var enableTextureReadbackHack by sharedPreferences(context, false)
+    var executorSlotCountScale by sharedPreferences(context, 6)
+
+    // Hacks
+    var enableFastGpuReadbackHack by sharedPreferences(context, false)
 
     // Debug
     var validationLayer by sharedPreferences(context, false)

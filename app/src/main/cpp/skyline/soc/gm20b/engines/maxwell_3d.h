@@ -6,9 +6,8 @@
 #pragma once
 
 #include <gpu/interconnect/maxwell_3d/maxwell_3d.h>
-#include "engine.h"
 #include <soc/host1x/syncpoint.h>
-#include "gpu/interconnect/maxwell_3d/common.h"
+#include "engine.h"
 #include "inline2memory.h"
 #include "maxwell/types.h"
 
@@ -24,7 +23,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
       private:
         host1x::SyncpointSet &syncpoints;
         Inline2MemoryBackend i2m;
-        gpu::interconnect::maxwell3d::DirtyManager dirtyManager;
+        gpu::interconnect::DirtyManager dirtyManager;
         gpu::interconnect::maxwell3d::Maxwell3D interconnect;
 
         union BatchEnableState {
@@ -267,12 +266,12 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
 
             Register<0x54F, type::MultisampleControl> multisampleControl;
 
-            Register<0x557, type::TexSamplerPool> texSamplerPool;
+            Register<0x557, TexSamplerPool> texSamplerPool;
 
             Register<0x55B, float> slopeScaleDepthBias;
             Register<0x55C, u32> aliasedLineWidthEnable;
 
-            Register<0x55D, type::TexHeaderPool> texHeaderPool;
+            Register<0x55D, TexHeaderPool> texHeaderPool;
 
             Register<0x565, u32> twoSidedStencilTestEnable; //!< Determines if the back-facing stencil state uses the front facing stencil state or independent stencil state
 
@@ -415,7 +414,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
 
             Register<0x900, std::array<type::BindGroup, type::ShaderStageCount>> bindGroups; //!< Binds constant buffers to pipeline stages
 
-            Register<0x982, type::BindlessTexture> bindlessTexture; //!< The index of the constant buffer containing bindless texture descriptors
+            Register<0x982, BindlessTexture> bindlessTexture; //!< The index of the constant buffer containing bindless texture descriptors
 
             Register<0xA00, std::array<std::array<u8, type::StreamOutLayoutSelectAttributeCount>, type::StreamOutBufferCount>> streamOutLayoutSelect;
         };
