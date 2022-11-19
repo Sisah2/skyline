@@ -30,6 +30,9 @@ class NativeSettings(context : Context, pref : PreferenceSettings) {
     // Hacks
     var enableFastGpuReadbackHack : Boolean = pref.enableFastGpuReadbackHack
 
+    // Audio
+    var isAudioOutputDisabled : Boolean = pref.isAudioOutputDisabled
+
     // Debug
     var validationLayer : Boolean = BuildConfig.BUILD_TYPE != "release" && pref.validationLayer
 

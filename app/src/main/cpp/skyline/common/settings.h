@@ -76,6 +76,9 @@ namespace skyline {
         // Hacks
         Setting<bool> enableFastGpuReadbackHack; //!< If the CPU texture readback skipping hack should be used
 
+        // Audio
+        Setting<bool> isAudioOutputDisabled; //!< Disables audio output
+
         // Debug
         Setting<bool> validationLayer; //!< If the vulkan validation layer is enabled
 
