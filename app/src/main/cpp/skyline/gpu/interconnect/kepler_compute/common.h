@@ -3,9 +3,9 @@
 
 #pragma once
 
-#include <soc/gm20b/engines/maxwell/types.h>
+#include <soc/gm20b/engines/kepler_compute/qmd.h>
 #include <gpu/interconnect/common/common.h>
 
-namespace skyline::gpu::interconnect::maxwell3d {
-    namespace engine = skyline::soc::gm20b::engine::maxwell3d::type;
+namespace skyline::gpu::interconnect::kepler_compute {
+    using QMD = skyline::soc::gm20b::engine::kepler_compute::QMD;
 }
