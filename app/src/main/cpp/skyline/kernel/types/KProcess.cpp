@@ -110,45 +110,44 @@ namespace skyline::kernel::type {
 
     constexpr u32 HandleWaitersBit{1UL << 30}; //!< A bit which denotes if a mutex psuedo-handle has waiters or not
 
-    Result KProcess::MutexLock(u32 *mutex, KHandle ownerHandle, KHandle tag) {
-        TRACE_EVENT_FMT("kernel", "MutexLock 0x{:X}", mutex);
+    Result KProcess::MutexLock(const std::shared_ptr<KThread> &thread, u32 *mutex, KHandle ownerHandle, KHandle tag, bool failOnOutdated) {
+        TRACE_EVENT_FMT("kernel", "MutexLock 0x{:X} @ 0x{:X}", mutex, thread->id);
 
         std::shared_ptr<KThread> owner;
         try {
             owner = GetHandle<KThread>(ownerHandle);
         } catch (const std::out_of_range &) {
-            if (*mutex != (ownerHandle | HandleWaitersBit))
-                return result::InvalidCurrentMemory;
+            if (__atomic_load_n(mutex, __ATOMIC_SEQ_CST) != (ownerHandle | HandleWaitersBit))
+                return failOnOutdated ? result::InvalidCurrentMemory : Result{};
 
             return result::InvalidHandle;
         }
 
         bool isHighestPriority;
         {
-            std::scoped_lock lock{owner->waiterMutex, state.thread->waiterMutex}; // We need to lock both mutexes at the same time as we mutate the owner and the current thread, the ordering of locks **must** match MutexUnlock to avoid deadlocks
+            std::scoped_lock lock{owner->waiterMutex, thread->waiterMutex}; // We need to lock both mutexes at the same time as we mutate the owner and the current thread, the ordering of locks **must** match MutexUnlock to avoid deadlocks
 
-            u32 value{};
-            if (__atomic_compare_exchange_n(mutex, &value, tag, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
-                // We try to do a CAS to get ownership of the mutex in the case that it's unoccupied
-                return {};
+            u32 value{__atomic_load_n(mutex, __ATOMIC_SEQ_CST)};
             if (value != (ownerHandle | HandleWaitersBit))
                 // We ensure that the mutex's value is the handle with the waiter bit set
-                return result::InvalidCurrentMemory;
+                return failOnOutdated ? result::InvalidCurrentMemory : Result{};
 
             auto &waiters{owner->waiters};
-            isHighestPriority = waiters.insert(std::upper_bound(waiters.begin(), waiters.end(), state.thread->priority.load(), KThread::IsHigherPriority), state.thread) == waiters.begin();
-            state.scheduler->RemoveThread();
+            isHighestPriority = waiters.insert(std::upper_bound(waiters.begin(), waiters.end(), thread->priority.load(), KThread::IsHigherPriority), thread) == waiters.begin();
+            if (thread == state.thread)
+                state.scheduler->RemoveThread();
 
-            state.thread->waitThread = owner;
-            state.thread->waitKey = mutex;
-            state.thread->waitTag = tag;
+            thread->waitThread = owner;
+            thread->waitMutex = mutex;
+            thread->waitTag = tag;
         }
 
         if (isHighestPriority)
             // If we were the highest priority thread then we need to inherit priorities for all threads we're waiting on recursively
-            state.thread->UpdatePriorityInheritance();
+            thread->UpdatePriorityInheritance();
 
-        state.scheduler->WaitSchedule();
+        if (thread == state.thread)
+            state.scheduler->WaitSchedule();
 
         return {};
     }
@@ -158,18 +157,18 @@ namespace skyline::kernel::type {
 
         std::scoped_lock lock{state.thread->waiterMutex};
         auto &waiters{state.thread->waiters};
-        auto nextOwnerIt{std::find_if(waiters.begin(), waiters.end(), [mutex](const std::shared_ptr<KThread> &thread) { return thread->waitKey == mutex; })};
+        auto nextOwnerIt{std::find_if(waiters.begin(), waiters.end(), [mutex](const std::shared_ptr<KThread> &thread) { return thread->waitMutex == mutex; })};
         if (nextOwnerIt != waiters.end()) {
             auto nextOwner{*nextOwnerIt};
             std::scoped_lock nextLock{nextOwner->waiterMutex};
             nextOwner->waitThread = std::shared_ptr<KThread>{nullptr};
-            nextOwner->waitKey = nullptr;
+            nextOwner->waitMutex = nullptr;
 
             // Move all threads waiting on this key to the next owner's waiter list
             std::shared_ptr<KThread> nextWaiter{};
             for (auto it{waiters.erase(nextOwnerIt)}, nextIt{std::next(it)}; it != waiters.end(); it = nextIt++) {
                 auto thread{*it};
-                if (thread->waitKey == mutex) {
+                if (thread->waitMutex == mutex) {
                     nextOwner->waiters.splice(std::upper_bound(nextOwner->waiters.begin(), nextOwner->waiters.end(), (*it)->priority.load(), KThread::IsHigherPriority), waiters, it);
                     thread->waitThread = nextOwner;
                     if (!nextWaiter)
@@ -215,8 +214,18 @@ namespace skyline::kernel::type {
         }
     }
 
-    Result KProcess::ConditionalVariableWait(u32 *key, u32 *mutex, KHandle tag, i64 timeout) {
-        TRACE_EVENT_FMT("kernel", "ConditionalVariableWait 0x{:X} (0x{:X})", key, mutex);
+    Result KProcess::ConditionVariableWait(u32 *key, u32 *mutex, KHandle tag, i64 timeout) {
+        TRACE_EVENT_FMT("kernel", "ConditionVariableWait 0x{:X} (0x{:X})", key, mutex);
+
+        {
+            // Update all waiter information
+            std::unique_lock lock{state.thread->waiterMutex};
+            state.thread->waitMutex = mutex;
+            state.thread->waitTag = tag;
+            state.thread->waitConditionVariable = key;
+            state.thread->waitSignalled = false;
+            state.thread->waitResult = {};
+        }
 
         {
             std::scoped_lock lock{syncWaiterMutex};
@@ -230,15 +239,72 @@ namespace skyline::kernel::type {
         }
 
         if (timeout > 0 && !state.scheduler->TimedWaitSchedule(std::chrono::nanoseconds(timeout))) {
+            bool inQueue{true};
             {
-                std::unique_lock lock(syncWaiterMutex);
+                // Attempt to remove ourselves from the queue so we cannot be signalled
+                std::unique_lock syncLock{syncWaiterMutex};
                 auto queue{syncWaiters.equal_range(key)};
                 auto iterator{std::find(queue.first, queue.second, SyncWaiters::value_type{key, state.thread})};
                 if (iterator != queue.second)
-                    if (syncWaiters.erase(iterator) == queue.second)
-                        __atomic_store_n(key, false, __ATOMIC_SEQ_CST);
-
+                    syncWaiters.erase(iterator);
+                else
+                    inQueue = false;
             }
+
+            bool shouldWait{false};
+            if (!inQueue) {
+                // If we weren't in the queue then we need to check if we were signalled already
+                while (true) {
+                    std::unique_lock lock{state.thread->waiterMutex};
+
+                    if (state.thread->waitSignalled) {
+                        if (state.thread->waitMutex) {
+                            auto waitThread{state.thread->waitThread};
+                            std::unique_lock waitLock{waitThread->waiterMutex, std::try_to_lock};
+                            if (!waitLock) {
+                                // If we can't lock the waitThread's waiterMutex then we need to wait without holding the current thread's waiterMutex to avoid a deadlock
+                                lock.unlock();
+                                waitLock.lock();
+                                continue;
+                            }
+
+                            auto &waiters{waitThread->waiters};
+                            auto it{std::find(waiters.begin(), waiters.end(), state.thread)};
+                            if (it != waiters.end()) {
+                                // If we were signalled but are waiting on locking the associated mutex then we need to cancel our wait
+                                waiters.erase(it);
+                                state.thread->UpdatePriorityInheritance();
+
+                                state.thread->waitMutex = nullptr;
+                                state.thread->waitTag = 0;
+                                state.thread->waitThread = nullptr;
+                            } else {
+                                // If we were signalled and are no longer waiting on the associated mutex then we're already scheduled
+                                shouldWait = true;
+                            }
+                        } else {
+                            // If the waitMutex is null then we were signalled and are no longer waiting on the associated mutex
+                            shouldWait = true;
+                        }
+                    } else {
+                        // If we were in the process of being signalled but prior to the mutex being locked then we can just cancel our wait
+                        state.thread->waitConditionVariable = nullptr;
+                        state.thread->waitSignalled = true;
+                    }
+                    break;
+                }
+            } else {
+                // If we were in the queue then we can just cancel our wait
+                state.thread->waitConditionVariable = nullptr;
+                state.thread->waitSignalled = true;
+            }
+
+            if (shouldWait) {
+                // Wait if we've been signalled in the meantime as it would be problematic to double insert a thread into the scheduler
+                state.scheduler->WaitSchedule();
+                return state.thread->waitResult;
+            }
+
             state.scheduler->InsertThread(state.thread);
             state.scheduler->WaitSchedule();
 
@@ -247,38 +313,78 @@ namespace skyline::kernel::type {
             state.scheduler->WaitSchedule();
         }
 
-        KHandle value{};
-        if (!__atomic_compare_exchange_n(mutex, &value, tag, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
-            while (MutexLock(mutex, value & ~HandleWaitersBit, tag) != Result{})
-                if ((value = __atomic_or_fetch(mutex, HandleWaitersBit, __ATOMIC_SEQ_CST)) == HandleWaitersBit)
-                    if (__atomic_compare_exchange_n(mutex, &value, tag, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
-                        break;
-
-        return {};
+        return state.thread->waitResult;
     }
 
-    void KProcess::ConditionalVariableSignal(u32 *key, i32 amount) {
-        TRACE_EVENT_FMT("kernel", "ConditionalVariableSignal 0x{:X}", key);
+    void KProcess::ConditionVariableSignal(u32 *key, i32 amount) {
+        TRACE_EVENT_FMT("kernel", "ConditionVariableSignal 0x{:X}", key);
 
         i32 waiterCount{amount};
-        std::shared_ptr<type::KThread> thread;
-        do {
-            if (thread) {
-                state.scheduler->InsertThread(thread);
-                thread = {};
+        while (amount <= 0 || waiterCount) {
+            std::shared_ptr<type::KThread> thread;
+            void *conditionVariable{};
+            {
+                // Try to find a thread to signal
+                std::scoped_lock lock{syncWaiterMutex};
+                auto queue{syncWaiters.equal_range(key)};
+
+                if (queue.first != queue.second) {
+                    // If we found a thread then we need to remove it from the queue
+                    thread = queue.first->second;
+                    conditionVariable = thread->waitConditionVariable;
+                    #ifndef NDEBUG
+                    if (conditionVariable != key)
+                        Logger::Warn("Condition variable mismatch: 0x{:X} != 0x{:X}", conditionVariable, key);
+                    #endif
+
+                    syncWaiters.erase(queue.first);
+                    waiterCount--;
+                } else if (queue.first == queue.second) {
+                    // If we didn't find a thread then we need to clear the boolean flag denoting that there are no more threads waiting on this conditional variable
+                    __atomic_store_n(key, false, __ATOMIC_SEQ_CST);
+                    break;
+                }
             }
 
-            std::scoped_lock lock{syncWaiterMutex};
-            auto queue{syncWaiters.equal_range(key)};
+            std::scoped_lock lock{thread->waiterMutex};
+            if (thread->waitConditionVariable == conditionVariable) {
+                // If the thread is still waiting on the same condition variable then we can signal it (It could no longer be waiting due to a timeout)
+                u32 *mutex{thread->waitMutex};
+                KHandle tag{thread->waitTag};
 
-            if (queue.first != queue.second && (amount <= 0 || waiterCount)) {
-                thread = queue.first->second;
-                syncWaiters.erase(queue.first);
-                waiterCount--;
-            } else if (queue.first == queue.second) {
-                __atomic_store_n(key, false, __ATOMIC_SEQ_CST); // We need to update the boolean flag denoting that there are no more threads waiting on this conditional variable
+                while (true) {
+                    // We need to lock the mutex before the thread can be scheduled
+                    KHandle value{};
+                    if (__atomic_compare_exchange_n(mutex, &value, tag, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+                        // A quick CAS to lock the mutex for the thread, we can just schedule the thread if we succeed
+                        state.scheduler->InsertThread(thread);
+                        break;
+                    }
+
+                    if ((value & HandleWaitersBit) == 0)
+                        // Set the waiters bit in the mutex if it wasn't already set
+                        if (!__atomic_compare_exchange_n(mutex, &value, value | HandleWaitersBit, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+                            continue; // If we failed to set the waiters bit due to an outdated value then try again
+
+                    // If we couldn't CAS the lock then we need to let the mutex holder schedule the thread instead of us during an unlock
+                    auto result{MutexLock(thread, mutex, value & ~HandleWaitersBit, tag, true)};
+                    if (result == result::InvalidCurrentMemory) {
+                        continue;
+                    } else if (result == result::InvalidHandle) {
+                        thread->waitResult = result::InvalidState;
+                        state.scheduler->InsertThread(thread);
+                    } else if (result != Result{}) {
+                        throw exception("Failed to lock mutex: 0x{:X}", result);
+                    }
+                    break;
+                }
+
+                // Update the thread's wait state to avoid incorrect timeout cancellation behavior
+                thread->waitConditionVariable = nullptr;
+                thread->waitSignalled = true;
+                thread->waitResult = {};
             }
-        } while (thread);
+        }
     }
 
     Result KProcess::WaitForAddress(u32 *address, u32 value, i64 timeout, ArbitrationType type) {
@@ -287,14 +393,14 @@ namespace skyline::kernel::type {
         {
             std::scoped_lock lock{syncWaiterMutex};
 
+            u32 userValue{__atomic_load_n(address, __ATOMIC_SEQ_CST)};
             switch (type) {
                 case ArbitrationType::WaitIfLessThan:
-                    if (*address >= value) [[unlikely]]
+                    if (userValue >= value) [[unlikely]]
                         return result::InvalidState;
                     break;
 
                 case ArbitrationType::DecrementAndWaitIfLessThan: {
-                    u32 userValue{__atomic_load_n(address, __ATOMIC_SEQ_CST)};
                     do {
                         if (value <= userValue) [[unlikely]] // We want to explicitly decrement **after** the check
                             return result::InvalidState;
@@ -303,10 +409,13 @@ namespace skyline::kernel::type {
                 }
 
                 case ArbitrationType::WaitIfEqual:
-                    if (*address != value) [[unlikely]]
+                    if (userValue != value) [[unlikely]]
                         return result::InvalidState;
                     break;
             }
+
+            if (timeout == 0) [[unlikely]]
+                return result::TimedOut;
 
             auto queue{syncWaiters.equal_range(address)};
             syncWaiters.insert(std::upper_bound(queue.first, queue.second, state.thread->priority.load(), [](const i8 priority, const SyncWaiters::value_type &it) { return it.second->priority > priority; }), {address, state.thread});
@@ -319,13 +428,18 @@ namespace skyline::kernel::type {
                 std::scoped_lock lock{syncWaiterMutex};
                 auto queue{syncWaiters.equal_range(address)};
                 auto iterator{std::find(queue.first, queue.second, SyncWaiters::value_type{address, state.thread})};
-                if (iterator != queue.second)
+                if (iterator != queue.second) {
                     if (syncWaiters.erase(iterator) == queue.second)
+                        // We need to update the boolean flag denoting that there are no more threads waiting on this address
                         __atomic_store_n(address, false, __ATOMIC_SEQ_CST);
+                } else {
+                    state.scheduler->WaitSchedule(false);
+                    return {};
+                }
             }
 
             state.scheduler->InsertThread(state.thread);
-            state.scheduler->WaitSchedule();
+            state.scheduler->WaitSchedule(false);
 
             return result::TimedOut;
         } else {

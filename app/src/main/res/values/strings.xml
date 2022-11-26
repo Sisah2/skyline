@@ -1,5 +1,5 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <string name="app_name">Skyline</string>
+    <string name="app_name" translatable="false">Skyline</string>
     <!-- Common -->
     <string name="search">Search</string>
     <string name="error">An error has occurred</string>
@@ -45,7 +45,7 @@
     <string name="handheld_enabled">The system will emulate being in handheld mode</string>
     <string name="docked_enabled">The system will emulate being in docked mode</string>
     <string name="username">Username</string>
-    <string name="username_default">@string/app_name</string>
+    <string name="username_default" translatable="false">@string/app_name</string>
     <string name="system_language">System language</string>
     <string name="system_region">System region</string>
     <!-- Settings - Keys -->
@@ -53,7 +53,10 @@
     <string name="prod_keys">Production Keys</string>
     <string name="title_keys">Title Keys</string>
     <string name="import_keys_success">Successfully imported keys</string>
-    <string name="import_keys_failed">Failed to import keys</string>
+    <string name="import_keys_invalid_input_path">The path to the provided keys is invalid</string>
+    <string name="import_keys_invalid_keys">The keys you tried to import are invalid</string>
+    <string name="import_keys_delete_previous_failed">Failed to delete the currently installed keys</string>
+    <string name="import_keys_move_failed">Failed to move the keys to the internal directory</string>
     <!-- Settings - Display -->
     <string name="display">Display</string>
     <string name="screen_orientation">Screen orientation</string>
@@ -95,6 +98,7 @@
     <string name="delete_gpu_driver">Delete this GPU driver</string>
     <string name="system_driver">System Driver</string>
     <string name="system_driver_desc">The GPU driver provided by your system</string>
+    <string name="install">Install</string>
     <string name="gpu_driver_install_inprogress">Installing the GPU driver…</string>
     <string name="gpu_driver_install_success">GPU driver installed successfully</string>
     <string name="gpu_driver_install_invalid_archive">Failed to unzip the provided driver package</string>
@@ -167,7 +171,7 @@
     <string name="left_stick">Left Stick</string>
     <string name="right_stick">Right Stick</string>
     <string name="face_buttons">Face Buttons</string>
-    <string name="shoulder_trigger"><![CDATA[Shoulder & Trigger Buttons]]></string>
+    <string name="shoulder_trigger">Shoulder &amp; Trigger Buttons</string>
     <string name="shoulder_rail">Shoulder Buttons on Joy-Con Rail</string>
     <string name="misc_buttons">Miscellaneous Buttons</string>
     <!-- Credits -->
