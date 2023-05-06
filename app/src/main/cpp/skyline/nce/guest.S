@@ -38,11 +38,16 @@ SaveCtx:
     STP Q28, Q29, [LR, #(0xA0 + 16 * 28)]
     STP Q30, Q31, [LR, #(0xA0 + 16 * 30)]
 
-    /* Store FPCR/FPSR */
+
+    /* Store System Registers */
+    STR X0, [SP, #-16]!
     MRS	X0, FPSR
     STR	W0, [LR, #0x298]
-    MRS	X1, FPCR
-    STR	W1, [LR, #0x29C]
+    MRS	X0, FPCR
+    STR	W0, [LR, #0x29C]
+    MRS	X0, NZCV
+    STR	W0, [LR, #0x2C0]
+    LDR X0, [SP], #16
 
     /* Restore Scratch Register */
     LDR LR, [SP, #8]
@@ -72,11 +77,13 @@ LoadCtx:
     LDP Q28, Q29, [LR, #(0xA0 + 16 * 28)]
     LDP Q30, Q31, [LR, #(0xA0 + 16 * 30)]
 
-    /* Store FPCR/FPSR */
-    MRS	X0, FPSR
-    STR	W0, [LR, #0x298]
-    MRS	X1, FPCR
-    STR	W1, [LR, #0x29C]
+    /* Load System Registers */
+    LDR	W0, [LR, #0x298]
+    MSR	FPSR, X0
+    LDR	W0, [LR, #0x29C]
+    MSR	FPCR, X0
+    LDR	W0, [LR, #0x2C0]
+    MSR	NZCV, X0
 
     /* Load GP Registers */
     LDP X0, X1, [LR, #(8 * 0)]
@@ -93,23 +100,3 @@ LoadCtx:
     /* Restore Scratch Register */
     LDR LR, [SP, #8]
     RET
-
-.global RescaleClock
-RescaleClock:
-    SUB SP, SP, #32
-    STP X0, X1, [SP, #16]
-    MOV X0, #30787
-    MOVK X0, #29108, LSL #16
-    MOVK X0, #23236, LSL #32
-    MOVK X0, #2684, LSL #48
-    MRS X1, CNTFRQ_EL0
-    LSR X1, X1, #5
-    UMULH X1, X1, X0
-    LSR X1, X1, #7
-    MRS X0, CNTVCT_EL0
-    UDIV X1, X0, X1
-    ADD X1, X1, X1, LSL #1
-    LSL X0, X1, #6
-    STR X0, [SP, #0]
-    LDP X0, X1, [SP, #16]
-

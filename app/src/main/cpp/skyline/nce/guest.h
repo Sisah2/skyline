@@ -98,14 +98,14 @@ namespace skyline {
             u8 *hostSp; //!< Host Stack Pointer, same as above
             u8 *tpidrroEl0; //!< Emulated HOS TPIDRRO_EL0
             u8 *tpidrEl0; //!< Emulated HOS TPIDR_EL0
+            u32 nzcv;
             const DeviceState *state;
             u64 magic{constant::SkyTlsMagic};
         };
 
         namespace guest {
-            constexpr size_t SaveCtxSize{39}; //!< The size of the SaveCtx function in 32-bit ARMv8 instructions
-            constexpr size_t LoadCtxSize{39}; //!< The size of the LoadCtx function in 32-bit ARMv8 instructions
-            constexpr size_t RescaleClockSize{16}; //!< The size of the RescaleClock function in 32-bit ARMv8 instructions
+            constexpr size_t SaveCtxSize{38}; //!< The size of the SaveCtx function in 32-bit ARMv8 instructions
+            constexpr size_t LoadCtxSize{36}; //!< The size of the LoadCtx function in 32-bit ARMv8 instructions
 
             /**
              * @brief Saves the context from CPU registers into TLS
@@ -118,12 +118,6 @@ namespace skyline {
              * @note Assumes that 8B is reserved at an offset of 8B from SP
              */
             extern "C" void LoadCtx(void);
-
-            /**
-             * @brief Rescales the host clock to Tegra X1 levels
-             * @note Output is on stack with the stack pointer offset 32B from the initial point
-             */
-            extern "C" __noreturn void RescaleClock(void);
         }
     }
 }
